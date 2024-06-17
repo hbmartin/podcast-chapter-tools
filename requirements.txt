@@ -17,7 +17,7 @@ msgspec==0.18.6
 mypy-extensions==1.0.0
 networkx==3.1
 ninja==1.11.1.1
-objective-sdk==4.0.7
+objective-sdk==4.0.9
 packaging==24.1
 pathspec==0.12.1
 platformdirs==4.2.2
