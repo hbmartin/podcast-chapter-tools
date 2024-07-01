@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import tiktoken
 from loguru import logger
 
 from podcast_transcript_tools.ai import (
@@ -11,6 +12,8 @@ from podcast_transcript_tools.json2simple import json_file_to_simple_file
 
 
 def create_chapters(transcript: str) -> dict[str, tuple[str | None, Exception | None]]:
+    # TODO: #21 estimate token count and split into multiple prompts if needed
+    # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
     return complete(
         prompts=prompt_transcript_to_chapters(transcript),
     )
@@ -26,6 +29,10 @@ if __name__ == "__main__":
     else:
         print("Please provide a simple transcript file")
         sys.exit(1)
+
+    encoder = tiktoken.encoding_for_model("gpt-4o")
+    encoding = encoder.encode(source_path.read_text())
+    logger.info(f"Document tokens: {len(encoding)}")
 
     chapters = create_chapters(Path(sys.argv[1]).read_text())
     for model_name, suggestion in chapters.items():
