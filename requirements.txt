@@ -27,7 +27,7 @@ packaging==24.1
 pathspec==0.12.1
 platformdirs==4.2.2
 pluggy==1.5.0
-pycnite==2024.6.13
+pycnite==2024.6.28
 pydantic==2.7.4
 pydot==2.0.0
 pyparsing==3.1.2
