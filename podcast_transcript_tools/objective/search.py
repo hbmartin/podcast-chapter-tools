@@ -13,7 +13,7 @@ def objective_search(objective_api_key: str, index_id: str, query: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 3:  # noqa: PLR2004
         logger.error(
             "Usage: search <index ID> <query>\n"
             "OBJECTIVE_KEY env var must be set to your API key.",
