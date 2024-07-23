@@ -26,8 +26,7 @@ def create_finetune_index(objective_api_key: str, index_id: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:  # noqa: PLR2004
-        logger.error(
-            "Usage: search <index ID>")
+        logger.error("Usage: search <index ID>")
         sys.exit(1)
     create_finetune_index(
         objective_api_key=os.environ["OBJECTIVE_KEY"],
