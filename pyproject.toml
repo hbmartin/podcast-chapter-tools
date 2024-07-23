@@ -5,6 +5,9 @@ build-backend = "setuptools.build_meta"
 [options]
 packages = ["podcast_chapter_tools"]
 
+[tool.setuptools]
+packages = ["podcast_chapter_tools"]
+
 [project]
 name = "podcast-chapter-tools"
 version = "0.1.0"
