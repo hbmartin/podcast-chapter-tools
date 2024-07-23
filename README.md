@@ -10,12 +10,18 @@
 
 Implementing indexing and conversion of podcast chapters.
 
+- https://github.com/hbmartin/podcast-transcript-convert
 - https://github.com/Podcastindex-org/podcast-namespace/blob/main/transcripts/transcripts.md
 - https://github.com/hbmartin/overcast-to-sqlite
 - https://support.spotify.com/us/podcasters/article/enabling-podcast-chapters/
 
+## Installation
 
-## Usage
+```bash
+pip install podcast-chapter-tools
+```
+
+## Development
 
 ```bash
 git clone git@github.com:hbmartin/podcast-chapter-tools.git
@@ -27,3 +33,4 @@ pip install -r requirements.txt
 
 ## Authors
 - [Harold Martin](https://www.linkedin.com/in/harold-martin-98526971/) - harold.martin at gmail
+- Icon courtesy of [Vecteezy.com](https://www.vecteezy.com)

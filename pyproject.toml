@@ -1,34 +1,43 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[options]
+packages = ["safari_to_sqlite"]
+
+[project]
+name = "podcast-chapter-tools"
+version = "0.1.0"
+description = " Extract and transform podcast chapter information between PodCastIndex chapters, Podlove simple chapters, and description embeds."
+readme = "README.md"
+license = {file = "LICENSE.txt"}
+requires-python = ">=3.11"
+authors = [
+    { name = "Harold Martin", email = "Harold.Martin@gmail.com" },
+]
+keywords = ["podcast", "chapters", "pci", "psc", "convert"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Framework :: Datasette",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+lint = ["black", "ruff", "pyroma", "pytype"]
+
+[project.urls]
+Homepage = "https://github.com/hbmartin/podcast-chapter-tools"
+
+
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
-exclude = [
-    ".bzr",
-    ".direnv",
-    ".eggs",
-    ".git",
-    ".git-rewrite",
-    ".hg",
-    ".ipynb_checkpoints",
-    ".mypy_cache",
-    ".nox",
-    ".pants.d",
-    ".pyenv",
-    ".pytest_cache",
-    ".pytype",
-    ".ruff_cache",
-    ".svn",
-    ".tox",
-    ".venv",
-    ".vscode",
-    "__pypackages__",
-    "_build",
-    "buck-out",
-    "build",
-    "dist",
-    "node_modules",
-    "setup.py",
-    "site-packages",
-    "venv",
-]
+exclude = [".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg", ".ipynb_checkpoints", ".mypy_cache", ".nox", ".pants.d", ".pyenv", ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox", ".venv", ".vscode", "__pypackages__", "_build", "buck-out", "build", "dist", "node_modules", "setup.py", "site-packages", "venv"]
 
 # Same as Black.
 line-length = 88
@@ -53,8 +62,7 @@ line-ending = "auto"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN201", "E501", "PLR2004", "PT011", "S101"]
-"podcast_transcript_tools/html_to_json.py" = ["PLR0912"]
-"podcast_transcript_tools/ai/prompts.py" = ["E501"]
+"ai/prompts.py" = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ". venv/lib/python3.12/site-packages"
