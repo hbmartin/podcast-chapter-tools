@@ -3,7 +3,6 @@ from pathlib import Path
 
 import tiktoken
 from loguru import logger
-
 from podcast_transcript_tools.ai import (
     complete,
     prompt_transcript_to_chapters,
