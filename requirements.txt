@@ -28,7 +28,6 @@ pathspec==0.12.1
 platformdirs==4.2.2
 podcast-transcript-convert==0.1.2
 pluggy==1.5.0
-pydot==2.0.0
 pyparsing==3.1.2
 pytest==8.3.2
 python-dotenv==1.0.1
