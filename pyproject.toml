@@ -28,13 +28,14 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
 
 dependencies = ["podcast-transcript-convert"]
 
 [project.optional-dependencies]
-lint = ["black", "ruff", "pyroma", "mypy"]
+lint = ["black", "ruff", "pyroma", "mypy", "types-requests"]
 
 [project.urls]
 Homepage = "https://github.com/hbmartin/podcast-chapter-tools"
