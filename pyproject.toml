@@ -34,7 +34,7 @@ classifiers = [
 dependencies = ["podcast-transcript-convert"]
 
 [project.optional-dependencies]
-lint = ["black", "ruff", "pyroma", "pytype"]
+lint = ["black", "ruff", "pyroma", "mypy"]
 
 [project.urls]
 Homepage = "https://github.com/hbmartin/podcast-chapter-tools"
@@ -49,7 +49,7 @@ line-length = 88
 indent-width = 4
 
 lint.select = ["ALL"]
-lint.ignore = ["ANN101", "D100", "D101", "D103", "D104", "D105", "D107", "D203", "D213", "ERA001", "FBT001", "FIX002", "PTH109", "S113", "S314", "S608", "SIM300", "T201", "TD002", "TD003", "UP040"]
+lint.ignore = ["ANN101", "D100", "D101", "D103", "D104", "D105", "D107", "D203", "D213", "ERA001", "FBT001", "FIX002", "ICN001", "PTH109", "S113", "S314", "S608", "SIM300", "T201", "TD002", "TD003", "UP040"]
 target-version = "py312"
 
 [tool.ruff.format]

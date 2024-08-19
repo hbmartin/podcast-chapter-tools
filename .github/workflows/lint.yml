@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
@@ -16,14 +16,16 @@ jobs:
         python-version: ${{ matrix.python-version }}
         cache: pip
         cache-dependency-path: requirements.txt
+        allow-prereleases: true
     - run: pip install -e '.[lint]'
     - run: ruff check .
-    - name: Run pytype if not on 3.12
+    - name: Run mypy (pytype on 3.11)
       run: |
-        if [[ '${{ steps.cpython3.outputs.python-version }}' == *"3.12"* ]]; then
-          echo "pytype does not support 3.12: https://github.com/google/pytype/issues/1475"
-        else
+        if [[ '${{ steps.cpython3.outputs.python-version }}' == *"3.11"* ]]; then
+          pip install pytype
           pytype -j auto podcast_chapter_tools
+        else
+            mypy podcast_chapter_tools
         fi
     - uses: psf/black@stable
       with:
