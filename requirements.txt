@@ -2,7 +2,7 @@ anthropic==0.34.0
 attrs==23.2.0
 beautifulsoup4==4.12.3
 black==24.8.0
-certifi==2024.7.4
+certifi==2024.8.30
 charset-normalizer==3.3.2
 click==8.1.7
 google-generativeai==0.7.2
