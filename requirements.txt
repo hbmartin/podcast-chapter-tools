@@ -10,7 +10,7 @@ huggingface-hub==0.24.5
 immutabledict==4.2.0
 importlab==0.8.1
 iniconfig==2.0.0
-Jinja2==3.1.4
+Jinja2==3.1.6
 libcst==1.4.0
 loguru==0.7.2
 lxml==5.2.2
