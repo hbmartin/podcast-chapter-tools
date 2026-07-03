@@ -1,0 +1,69 @@
+import json
+
+import pytest
+
+from podcast_chapter_tools.cli import main
+
+DESCRIPTION = """0:00 Intro
+5:10 Main topic
+1:02:02 Outro
+"""
+
+
+@pytest.fixture
+def description_file(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text(DESCRIPTION)
+    return path
+
+
+def test_from_description_to_pci(description_file, capsys):
+    assert main(["from-description", str(description_file)]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [c["startTime"] for c in doc["chapters"]] == [0, 310, 3722]
+
+
+def test_from_description_to_psc(description_file, capsys):
+    assert main(["from-description", str(description_file), "--to", "psc"]) == 0
+    out = capsys.readouterr().out
+    assert "psc:chapter" in out
+    assert 'title="Main topic"' in out
+
+
+def test_from_description_to_description(description_file, capsys):
+    assert main(["from-description", str(description_file), "--to", "description"]) == 0
+    assert "5:10 Main topic" in capsys.readouterr().out
+
+
+def test_from_psc(feed_file, capsys):
+    assert main(["from-psc", str(feed_file), "--guid", "guid-1"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["chapters"][0] == {"startTime": 0, "title": "Intro"}
+
+
+def test_from_pci_file(pci_json, tmp_path, capsys):
+    source = tmp_path / "chapters.json"
+    source.write_text(json.dumps(pci_json))
+    assert main(["from-pci", str(source), "--to", "description"]) == 0
+    assert "5:10 Main topic" in capsys.readouterr().out
+
+
+def test_output_file(description_file, tmp_path):
+    out_path = tmp_path / "chapters.json"
+    assert main(["from-description", str(description_file), "-o", str(out_path)]) == 0
+    assert json.loads(out_path.read_text())["version"] == "1.2.0"
+
+
+def test_no_chapters_found(tmp_path, capsys):
+    empty = tmp_path / "empty.txt"
+    empty.write_text("no chapters here")
+    assert main(["from-description", str(empty)]) == 1
+    assert "No chapters found" in capsys.readouterr().err
+
+
+def test_normalize_flag(tmp_path, capsys):
+    notes = tmp_path / "notes.txt"
+    notes.write_text("5:00 <b>Second</b>\n0:00 First\n")
+    assert main(["from-description", str(notes), "--normalize"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [c["title"] for c in doc["chapters"]] == ["First", "Second"]
