@@ -86,6 +86,30 @@ def test_get_and_extract_writes_archive(monkeypatch, pci_json, tmp_path):
     assert json.loads(archive.read_text()) == pci_json
 
 
+def test_get_and_extract_returns_chapters_when_archive_write_fails(
+    monkeypatch,
+    pci_json,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        extractors.requests,
+        "get",
+        lambda *a, **kw: FakeResponse(json_data=pci_json),
+    )
+    archive = tmp_path / "chapters.json"
+
+    def fail_write(self, data, encoding=None):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(type(archive), "write_text", fail_write)
+    chapters = get_and_extract_pci_chapters(
+        "https://example.com/chapters.json",
+        archive_path_json=archive,
+    )
+
+    assert chapters == EXPECTED
+
+
 def test_get_and_extract_reads_archive(monkeypatch, pci_json, tmp_path):
     archive = tmp_path / "chapters.json"
     archive.write_text(json.dumps(pci_json))
@@ -113,6 +137,18 @@ def test_get_and_extract_bad_archive_json(tmp_path):
     )
 
 
+def test_get_and_extract_bad_archive_utf8(tmp_path):
+    archive = tmp_path / "chapters.json"
+    archive.write_bytes(b"\xff")
+    assert (
+        get_and_extract_pci_chapters(
+            "https://example.com/chapters.json",
+            archive_path_json=archive,
+        )
+        is None
+    )
+
+
 def test_find_pci_chapters_url(feed_file):
     assert (
         find_pci_chapters_url(feed_file, "guid-2")
@@ -123,3 +159,9 @@ def test_find_pci_chapters_url(feed_file):
 def test_find_pci_chapters_url_not_declared(feed_file):
     assert find_pci_chapters_url(feed_file, "guid-1") is None
     assert find_pci_chapters_url(feed_file, "no-such-guid") is None
+
+
+def test_find_pci_chapters_url_invalid_utf8(tmp_path):
+    feed = tmp_path / "feed.xml"
+    feed.write_bytes(b"\xff")
+    assert find_pci_chapters_url(feed, "guid-1") is None

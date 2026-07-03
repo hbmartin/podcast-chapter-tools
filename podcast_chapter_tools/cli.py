@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output.write_text(rendered + "\n", encoding="utf-8")
         else:
             print(rendered)
-    except (OSError, json.JSONDecodeError, ImportError) as exc:
+    except (OSError, ValueError, ImportError) as exc:
         logger.error("%s", exc)  # noqa: TRY400
         return 1
     return 0

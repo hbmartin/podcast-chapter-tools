@@ -58,6 +58,14 @@ def test_from_pci_file_bad_json_returns_error(tmp_path, caplog):
     assert "Expecting" in caplog.text
 
 
+def test_from_pci_file_invalid_utf8_returns_error(tmp_path, caplog):
+    source = tmp_path / "chapters.json"
+    source.write_bytes(b"\xff")
+    with caplog.at_level(logging.ERROR):
+        assert main(["from-pci", str(source)]) == 1
+    assert "utf-8" in caplog.text
+
+
 def test_from_id3_missing_optional_dependency(tmp_path, monkeypatch, caplog):
     source = tmp_path / "episode.mp3"
     source.write_bytes(b"\x00" * 128)

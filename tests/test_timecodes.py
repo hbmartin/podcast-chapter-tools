@@ -17,7 +17,7 @@ class TestTsToSecs:
         assert ts_to_secs("0:01:30.500") == 90
 
     def test_fractional_seconds_only_allowed_in_final_segment(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="final segment"):
             ts_to_secs("1.5:02")
 
     def test_fractional_seconds_must_be_numeric(self):

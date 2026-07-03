@@ -56,7 +56,8 @@ def _ctoc_order(tags: Any, chap_frames: dict[str, Any]) -> list[str]:  # noqa: A
     for ctoc in tags.getall("CTOC"):
         child_ids = [cid for cid in ctoc.child_element_ids if cid in chap_frames]
         if child_ids:
-            return child_ids + [cid for cid in sorted_ids if cid not in child_ids]
+            child_ids_set = set(child_ids)
+            return child_ids + [cid for cid in sorted_ids if cid not in child_ids_set]
     return sorted_ids
 
 

@@ -107,7 +107,7 @@ def get_and_extract_pci_chapters(
     if archive_path_json is not None and archive_path_json.exists():
         try:
             chapters_json = json.loads(archive_path_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             logger.warning("Failed to read archived PCI chapters %s", archive_path_json)
             return None
     else:
@@ -129,10 +129,17 @@ def get_and_extract_pci_chapters(
             logger.warning("Failed to decode PCI chapters JSON %s", url)
             return None
         if archive_path_json:
-            archive_path_json.write_text(
-                json.dumps(chapters_json),
-                encoding="utf-8",
-            )
+            try:
+                archive_path_json.write_text(
+                    json.dumps(chapters_json),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Failed to write archived PCI chapters %s: %s",
+                    archive_path_json,
+                    exc,
+                )
 
     chapters = extract_pci_chapters(chapters_json)
     if chapters is None:
@@ -161,12 +168,23 @@ def _parse_feed(feed_xml: str, source: str) -> ElementTree.Element | None:
     return root
 
 
+def _read_feed_file(feed_file: Path) -> str | None:
+    try:
+        return feed_file.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        logger.error("Failed to read feed file %s: %s", feed_file, exc)  # noqa: TRY400
+        return None
+
+
 def extract_psc_chapters_from_file(feed_file: Path, guid: str) -> None | list[Chapter]:
     """Extract PSC chapters for the episode with ``guid`` from a feed file."""
     if not feed_file.exists():
         logger.error("File not found %s", feed_file)
         return None
-    root = _parse_feed(feed_file.read_text(encoding="utf-8"), str(feed_file))
+    feed_content = _read_feed_file(feed_file)
+    if feed_content is None:
+        return None
+    root = _parse_feed(feed_content, str(feed_file))
     if root is None:
         return None
     return _extract_psc_chapters_for_guid(root, guid, str(feed_file))
@@ -215,7 +233,10 @@ def extract_all_psc_chapters_from_file(
     if not feed_file.exists():
         logger.error("File not found %s", feed_file)
         return None
-    root = _parse_feed(feed_file.read_text(encoding="utf-8"), str(feed_file))
+    feed_content = _read_feed_file(feed_file)
+    if feed_content is None:
+        return None
+    root = _parse_feed(feed_content, str(feed_file))
     if root is None:
         return None
 
@@ -260,7 +281,10 @@ def find_pci_chapters_url(feed_file: Path, guid: str) -> str | None:
     if not feed_file.exists():
         logger.error("File not found %s", feed_file)
         return None
-    root = _parse_feed(feed_file.read_text(encoding="utf-8"), str(feed_file))
+    feed_content = _read_feed_file(feed_file)
+    if feed_content is None:
+        return None
+    root = _parse_feed(feed_content, str(feed_file))
     if root is None:
         return None
     for item in _iter_feed_items(root):
