@@ -1,5 +1,7 @@
 name: Lint and Test
-on: push
+on:
+  push:
+  pull_request:
 
 jobs:
   lint:
@@ -17,8 +19,9 @@ jobs:
         cache: pip
         cache-dependency-path: requirements.txt
         allow-prereleases: true
-    - run: pip install -e '.[lint]'
+    - run: pip install -e '.[lint,test]'
     - run: ruff check .
+    - run: ruff format --check .
     - name: Run mypy (pytype on 3.11)
       run: |
         if [[ '${{ steps.cpython3.outputs.python-version }}' == *"3.11"* ]]; then
@@ -27,7 +30,5 @@ jobs:
         else
             mypy podcast_chapter_tools
         fi
-    - uses: psf/black@stable
-      with:
-        options: "--check --verbose"
+    - run: pytest --cov=podcast_chapter_tools --cov-report=term-missing
     - run: pyroma . --min=10

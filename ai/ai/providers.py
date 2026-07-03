@@ -2,7 +2,7 @@ from collections.abc import Callable, Iterable
 from os import environ
 from typing import TypeAlias
 
-from podcast_transcript_tools.ai.api_calls import (
+from .api_calls import (
     _call_anthropic,
     _call_google,
     _call_openai,
@@ -15,9 +15,9 @@ OPENAI = "openai"
 ANTHROPIC = "anthropic"
 GOOGLE = "google"
 
-ANTHROPIC_MODEL = environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20240620"
-GPT_MODEL = environ.get("GPT_MODEL") or "gpt-4o-2024-05-13"
-GEMINI_MODEL = environ.get("GEMINI_MODEL") or "gemini-1.5-pro-latest"
+ANTHROPIC_MODEL = environ.get("ANTHROPIC_MODEL") or "claude-opus-4-8"
+GPT_MODEL = environ.get("GPT_MODEL") or "gpt-5.1"
+GEMINI_MODEL = environ.get("GEMINI_MODEL") or "gemini-2.5-pro"
 
 
 ai_calls: set[AiCall] = {

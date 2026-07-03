@@ -3,11 +3,12 @@ from pathlib import Path
 
 import tiktoken
 from loguru import logger
-from podcast_transcript_tools.ai import (
+from podcast_transcript_tools.json2simple import json_file_to_simple_file
+
+from ai import (
     complete,
     prompt_transcript_to_chapters,
 )
-from podcast_transcript_tools.json2simple import json_file_to_simple_file
 
 
 def create_chapters(transcript: str) -> dict[str, tuple[str | None, Exception | None]]:

@@ -1,107 +1,215 @@
 import json
-from contextlib import suppress
+import logging
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree
 
 import requests
 
 from .entities import (
+    PCI,
     PSC,
     Chapter,
     _description_chapter,
     _re_url,
     _retry_description_chapter,
 )
+from .normalize import strip_html as _strip_html
+from .timecodes import ts_to_secs
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TIMEOUT = 30.0
+
+# Backwards-compatible alias for the pre-0.2 private helper.
+_ts_to_secs = ts_to_secs
 
 
-def _ts_to_secs(time_string: str) -> int:
-    """Convert a time stamp string to seconds."""
-    time_parts = time_string.split(".")[0].split(":")
-    seconds = int(time_parts[-1])
-    if len(time_parts) > 1:
-        seconds += 60 * int(time_parts[-2])
-    if len(time_parts) > 2:  # noqa: PLR2004
-        with suppress(ValueError):
-            seconds += 3600 * int(time_parts[-3])
-    return seconds
+def extract_description_chapters(
+    description: str,
+    *,
+    strip_html: bool = False,
+) -> None | list[Chapter]:
+    """Extract chapters from an episode description (plain text or HTML).
 
-
-def extract_description_chapters(description: str) -> None | list[Chapter]:
+    Returns ``None`` when fewer than two chapters are found, since a single
+    timestamp is more likely to be an incidental mention than a chapter list.
+    Set ``strip_html`` to remove markup from chapter titles.
+    """
     desc_chapters = _description_chapter.findall(description)
-    if len(desc_chapters) > 1:
-        return [_extract_desc_ts_and_title(c) for c in desc_chapters]
+    chapters = _desc_matches_to_chapters(desc_chapters, strip_html=strip_html)
+    if chapters is not None:
+        return chapters
     if len(desc_chapters) == 1:
         retry_desc_chapters = _retry_description_chapter.findall(
             f"{desc_chapters[0][0]} {desc_chapters[0][1]}",
         )
-        if len(retry_desc_chapters) > 1:
-            return [_extract_desc_ts_and_title(c) for c in retry_desc_chapters]
+        return _desc_matches_to_chapters(retry_desc_chapters, strip_html=strip_html)
     return None
 
 
-def _extract_desc_ts_and_title(ts_title: tuple[str, str]) -> Chapter:
+def _desc_matches_to_chapters(
+    matches: list[tuple[str, str]],
+    *,
+    strip_html: bool,
+) -> None | list[Chapter]:
+    if len(matches) < 2:  # noqa: PLR2004
+        return None
+    chapters = []
+    for match in matches:
+        try:
+            chapters.append(_extract_desc_ts_and_title(match, strip_html=strip_html))
+        except ValueError:
+            logger.debug("Skipping invalid chapter timestamp: %s", match[0])
+    return chapters if len(chapters) > 1 else None
+
+
+def _extract_desc_ts_and_title(
+    ts_title: tuple[str, str],
+    *,
+    strip_html: bool = False,
+) -> Chapter:
     title = ts_title[1].strip()
     if "<a" in title and "</a>" not in title:
         title += "</a>"
 
     url = m[0] if (m := _re_url.search(title)) is not None else None
+    if strip_html:
+        title = _strip_html(title)
 
-    return _ts_to_secs(ts_title[0]), title, url, None
+    return Chapter(ts_to_secs(ts_title[0]), title, url, None)
+
+
+def extract_pci_chapters(chapters_json: dict[str, Any]) -> None | list[Chapter]:
+    """Extract chapters from a parsed PodcastIndex chapters JSON document."""
+    try:
+        return [
+            Chapter(int(c["startTime"]), c["title"], c.get("url"), c.get("img"))
+            for c in chapters_json["chapters"]
+        ]
+    except (KeyError, ValueError, TypeError):
+        logger.warning("Failed to extract PCI chapters from JSON document")
+        return None
 
 
 def get_and_extract_pci_chapters(
     url: str,
-    headers: dict,
-    archive_path_json: Path | None,
+    headers: dict | None = None,
+    archive_path_json: Path | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> None | list[Chapter]:
+    """Fetch a PodcastIndex chapters JSON document and extract its chapters.
+
+    When ``archive_path_json`` is given, the raw JSON is read from (or written
+    to) that path so repeated calls do not refetch the document.
+    """
     if archive_path_json is not None and archive_path_json.exists():
         chapters_json = json.loads(archive_path_json.read_text())
     else:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers or {}, timeout=timeout)
         if not response.ok:
-            print(f"⛔️ Error {response.status_code} fetching chapters {url}")
+            logger.error(
+                "Error %s fetching chapters %s",
+                response.status_code,
+                url,
+            )
             return None
         chapters_json = response.json()
         if archive_path_json:
             archive_path_json.write_text(json.dumps(chapters_json))
 
+    chapters = extract_pci_chapters(chapters_json)
+    if chapters is None:
+        logger.warning("Failed to extract PCI for %s @ %s", url, archive_path_json)
+    return chapters
+
+
+def _iter_feed_items(root: ElementTree.Element) -> Iterator[ElementTree.Element]:
+    channel = root.find("./channel")
+    if channel is None:
+        return
+    for element in channel:
+        if element.tag == "item":
+            yield element
+
+
+def _parse_feed(feed_xml: str, source: str) -> ElementTree.Element | None:
     try:
-        return [
-            (int(c["startTime"]), c["title"], c.get("url"), c.get("img"))
-            for c in chapters_json["chapters"]
-        ]
-    except (KeyError, ValueError, TypeError):
-        print(f"Failed to extract PCI for {url} @ {archive_path_json}")
+        root = ElementTree.fromstring(feed_xml)
+    except ElementTree.ParseError:
+        logger.warning("Failed to parse podcast feed %s", source)
         return None
+    if root.find("./channel") is None:
+        logger.warning("Failed to find channel in podcast feed %s", source)
+        return None
+    return root
 
 
 def extract_psc_chapters_from_file(feed_file: Path, guid: str) -> None | list[Chapter]:
+    """Extract PSC chapters for the episode with ``guid`` from a feed file."""
     if not feed_file.exists():
-        print(f"⛔️ File not found {feed_file}")
+        logger.error("File not found %s", feed_file)
         return None
-
-    try:
-        root = ElementTree.fromstring(feed_file.read_text())
-    except ElementTree.ParseError:
-        print(f"Failed to parse podcast feed {feed_file}.")
+    root = _parse_feed(feed_file.read_text(), str(feed_file))
+    if root is None:
         return None
+    return _extract_psc_chapters_for_guid(root, guid, str(feed_file))
 
-    if (channel := root.find("./channel")) is None:
-        print(f"Failed to find channel podcast feed {feed_file}.")
+
+def extract_psc_chapters_from_url(
+    feed_url: str,
+    guid: str,
+    headers: dict | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> None | list[Chapter]:
+    """Fetch a podcast feed and extract PSC chapters for ``guid``."""
+    response = requests.get(feed_url, headers=headers or {}, timeout=timeout)
+    if not response.ok:
+        logger.error("Error %s fetching feed %s", response.status_code, feed_url)
         return None
+    root = _parse_feed(response.text, feed_url)
+    if root is None:
+        return None
+    return _extract_psc_chapters_for_guid(root, guid, feed_url)
 
-    for element in channel:
-        if element.tag == "item":
-            found_guid = element.find("guid")
-            if found_guid is not None and found_guid.text == guid:
-                if (psc_chapters := element.find(f"./{PSC}chapters")) is not None:
-                    return extract_psc_chapters(psc_chapters)
 
-                print(
-                    f"Failed PSC chapters for episode {guid} in {feed_file}",
-                )
-                return None
+def _extract_psc_chapters_for_guid(
+    root: ElementTree.Element,
+    guid: str,
+    source: str,
+) -> None | list[Chapter]:
+    for item in _iter_feed_items(root):
+        found_guid = item.find("guid")
+        if found_guid is not None and found_guid.text == guid:
+            if (psc_chapters := item.find(f"./{PSC}chapters")) is not None:
+                return extract_psc_chapters(psc_chapters)
+            logger.info("Failed PSC chapters for episode %s in %s", guid, source)
+            return None
     return None
+
+
+def extract_all_psc_chapters_from_file(
+    feed_file: Path,
+) -> None | dict[str, list[Chapter]]:
+    """Extract PSC chapters for every episode in a feed file, keyed by GUID."""
+    if not feed_file.exists():
+        logger.error("File not found %s", feed_file)
+        return None
+    root = _parse_feed(feed_file.read_text(), str(feed_file))
+    if root is None:
+        return None
+
+    all_chapters: dict[str, list[Chapter]] = {}
+    for item in _iter_feed_items(root):
+        found_guid = item.find("guid")
+        if found_guid is None or found_guid.text is None:
+            continue
+        if (psc_chapters := item.find(f"./{PSC}chapters")) is not None:
+            chapters = extract_psc_chapters(psc_chapters)
+            if chapters is not None:
+                all_chapters[found_guid.text] = chapters
+    return all_chapters
 
 
 def extract_psc_chapters(psc_chapters: ElementTree.Element) -> None | list[Chapter]:
@@ -111,9 +219,35 @@ def extract_psc_chapters(psc_chapters: ElementTree.Element) -> None | list[Chapt
     """
     try:
         return [
-            (_ts_to_secs(c.attrib["start"]), c.attrib["title"], None, None)
+            Chapter(
+                ts_to_secs(c.attrib["start"]),
+                c.attrib["title"],
+                c.attrib.get("href"),
+                c.attrib.get("image"),
+            )
             for c in psc_chapters
         ]
     except (KeyError, ValueError, TypeError):
-        print(f"Failed to extract PSC chapters {psc_chapters}")
+        logger.warning("Failed to extract PSC chapters %s", psc_chapters)
         return None
+
+
+def find_pci_chapters_url(feed_file: Path, guid: str) -> str | None:
+    """Find the ``<podcast:chapters>`` URL for the episode with ``guid``.
+
+    Returns the URL declared in the feed's Podcasting 2.0 namespace, ready to
+    pass to ``get_and_extract_pci_chapters``, or ``None`` if not declared.
+    """
+    if not feed_file.exists():
+        logger.error("File not found %s", feed_file)
+        return None
+    root = _parse_feed(feed_file.read_text(), str(feed_file))
+    if root is None:
+        return None
+    for item in _iter_feed_items(root):
+        found_guid = item.find("guid")
+        if found_guid is not None and found_guid.text == guid:
+            if (pci_chapters := item.find(f"./{PCI}chapters")) is not None:
+                return pci_chapters.attrib.get("url")
+            return None
+    return None

@@ -1,0 +1,11 @@
+# Dependencies for the experimental AI chapter-generation scripts in ai/.
+# These are intentionally separate from the core library's dependencies.
+anthropic
+google-generativeai
+llama-index
+loguru
+objective-sdk
+openai
+podcast-transcript-convert
+python-dotenv
+tiktoken
