@@ -37,9 +37,10 @@ def chapters_to_pci_json(
 
 def chapters_to_psc_element(chapters: Iterable[Chapter]) -> ElementTree.Element:
     """Build a ``<psc:chapters>`` element containing the given chapters."""
+    ElementTree.register_namespace("psc", PSC_NAMESPACE)
     root = ElementTree.Element(
-        "psc:chapters",
-        {"version": PSC_VERSION, "xmlns:psc": PSC_NAMESPACE},
+        f"{{{PSC_NAMESPACE}}}chapters",
+        {"version": PSC_VERSION},
     )
     for chapter in chapters:
         chapter_ = Chapter(*chapter)
@@ -48,7 +49,7 @@ def chapters_to_psc_element(chapters: Iterable[Chapter]) -> ElementTree.Element:
             attrib["href"] = chapter_.url
         if chapter_.image is not None:
             attrib["image"] = chapter_.image
-        ElementTree.SubElement(root, "psc:chapter", attrib)
+        ElementTree.SubElement(root, f"{{{PSC_NAMESPACE}}}chapter", attrib)
     return root
 
 

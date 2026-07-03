@@ -105,9 +105,17 @@ def get_and_extract_pci_chapters(
     to) that path so repeated calls do not refetch the document.
     """
     if archive_path_json is not None and archive_path_json.exists():
-        chapters_json = json.loads(archive_path_json.read_text())
+        try:
+            chapters_json = json.loads(archive_path_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Failed to read archived PCI chapters %s", archive_path_json)
+            return None
     else:
-        response = requests.get(url, headers=headers or {}, timeout=timeout)
+        try:
+            response = requests.get(url, headers=headers or {}, timeout=timeout)
+        except requests.RequestException as exc:
+            logger.error("Error fetching chapters %s: %s", url, exc)  # noqa: TRY400
+            return None
         if not response.ok:
             logger.error(
                 "Error %s fetching chapters %s",
@@ -115,9 +123,16 @@ def get_and_extract_pci_chapters(
                 url,
             )
             return None
-        chapters_json = response.json()
+        try:
+            chapters_json = response.json()
+        except ValueError:
+            logger.warning("Failed to decode PCI chapters JSON %s", url)
+            return None
         if archive_path_json:
-            archive_path_json.write_text(json.dumps(chapters_json))
+            archive_path_json.write_text(
+                json.dumps(chapters_json),
+                encoding="utf-8",
+            )
 
     chapters = extract_pci_chapters(chapters_json)
     if chapters is None:
@@ -151,7 +166,7 @@ def extract_psc_chapters_from_file(feed_file: Path, guid: str) -> None | list[Ch
     if not feed_file.exists():
         logger.error("File not found %s", feed_file)
         return None
-    root = _parse_feed(feed_file.read_text(), str(feed_file))
+    root = _parse_feed(feed_file.read_text(encoding="utf-8"), str(feed_file))
     if root is None:
         return None
     return _extract_psc_chapters_for_guid(root, guid, str(feed_file))
@@ -164,7 +179,11 @@ def extract_psc_chapters_from_url(
     timeout: float = DEFAULT_TIMEOUT,
 ) -> None | list[Chapter]:
     """Fetch a podcast feed and extract PSC chapters for ``guid``."""
-    response = requests.get(feed_url, headers=headers or {}, timeout=timeout)
+    try:
+        response = requests.get(feed_url, headers=headers or {}, timeout=timeout)
+    except requests.RequestException as exc:
+        logger.error("Error fetching feed %s: %s", feed_url, exc)  # noqa: TRY400
+        return None
     if not response.ok:
         logger.error("Error %s fetching feed %s", response.status_code, feed_url)
         return None
@@ -196,7 +215,7 @@ def extract_all_psc_chapters_from_file(
     if not feed_file.exists():
         logger.error("File not found %s", feed_file)
         return None
-    root = _parse_feed(feed_file.read_text(), str(feed_file))
+    root = _parse_feed(feed_file.read_text(encoding="utf-8"), str(feed_file))
     if root is None:
         return None
 
@@ -241,7 +260,7 @@ def find_pci_chapters_url(feed_file: Path, guid: str) -> str | None:
     if not feed_file.exists():
         logger.error("File not found %s", feed_file)
         return None
-    root = _parse_feed(feed_file.read_text(), str(feed_file))
+    root = _parse_feed(feed_file.read_text(encoding="utf-8"), str(feed_file))
     if root is None:
         return None
     for item in _iter_feed_items(root):

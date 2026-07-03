@@ -88,3 +88,13 @@ def test_extract_from_url_http_error(monkeypatch):
     assert (
         extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1") is None
     )
+
+
+def test_extract_from_url_request_error(monkeypatch):
+    def boom(*a, **kw):
+        raise extractors.requests.RequestException("timeout")
+
+    monkeypatch.setattr(extractors.requests, "get", boom)
+    assert (
+        extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1") is None
+    )

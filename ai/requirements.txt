@@ -7,5 +7,4 @@ loguru
 objective-sdk
 openai
 podcast-transcript-convert
-python-dotenv
 tiktoken

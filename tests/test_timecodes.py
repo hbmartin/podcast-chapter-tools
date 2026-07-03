@@ -16,6 +16,14 @@ class TestTsToSecs:
     def test_fractional_seconds_truncated(self):
         assert ts_to_secs("0:01:30.500") == 90
 
+    def test_fractional_seconds_only_allowed_in_final_segment(self):
+        with pytest.raises(ValueError):
+            ts_to_secs("1.5:02")
+
+    def test_fractional_seconds_must_be_numeric(self):
+        with pytest.raises(ValueError):
+            ts_to_secs("1:02.bad")
+
     def test_leading_zeros(self):
         assert ts_to_secs("00:00:00") == 0
         assert ts_to_secs("01:05") == 65

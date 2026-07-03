@@ -11,6 +11,7 @@ from podcast_chapter_tools.writers import (
     chapters_to_description,
     chapters_to_pci_dict,
     chapters_to_pci_json,
+    chapters_to_psc_element,
     chapters_to_psc_xml,
 )
 
@@ -49,6 +50,12 @@ def test_psc_xml_roundtrip():
         (310, "Main topic", "https://example.com/topic", None),
         (3722, "Outro", None, "https://example.com/outro.png"),
     ]
+
+
+def test_psc_element_uses_namespace_expanded_tags():
+    element = chapters_to_psc_element(CHAPTERS)
+    assert element.tag == "{http://podlove.org/simple-chapters}chapters"
+    assert element[0].tag == "{http://podlove.org/simple-chapters}chapter"
 
 
 def test_psc_xml_escapes_titles():

@@ -47,6 +47,30 @@ def test_get_and_extract_http_error(monkeypatch):
     assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
 
 
+def test_get_and_extract_request_error(monkeypatch):
+    def boom(*a, **kw):
+        raise extractors.requests.RequestException("timeout")
+
+    monkeypatch.setattr(extractors.requests, "get", boom)
+    assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
+
+
+def test_get_and_extract_bad_json_response(monkeypatch):
+    class BadJsonResponse:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            raise ValueError("bad json")
+
+    monkeypatch.setattr(
+        extractors.requests,
+        "get",
+        lambda *a, **kw: BadJsonResponse(),
+    )
+    assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
+
+
 def test_get_and_extract_writes_archive(monkeypatch, pci_json, tmp_path):
     monkeypatch.setattr(
         extractors.requests,
@@ -75,6 +99,18 @@ def test_get_and_extract_reads_archive(monkeypatch, pci_json, tmp_path):
         archive_path_json=archive,
     )
     assert chapters == EXPECTED
+
+
+def test_get_and_extract_bad_archive_json(tmp_path):
+    archive = tmp_path / "chapters.json"
+    archive.write_text("{")
+    assert (
+        get_and_extract_pci_chapters(
+            "https://example.com/chapters.json",
+            archive_path_json=archive,
+        )
+        is None
+    )
 
 
 def test_find_pci_chapters_url(feed_file):
