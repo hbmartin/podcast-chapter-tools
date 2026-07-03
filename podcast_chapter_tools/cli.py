@@ -31,6 +31,8 @@ from .writers import (
 
 FORMATS = ("pci", "psc", "description")
 
+logger = logging.getLogger(__name__)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -82,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _extract(args: argparse.Namespace) -> None | list[Chapter]:  # noqa: PLR0911
     if args.command == "from-description":
         return extract_description_chapters(
-            args.file.read_text(),
+            args.file.read_text(encoding="utf-8"),
             strip_html=args.strip_html,
         )
     if args.command == "from-psc":
@@ -92,7 +94,9 @@ def _extract(args: argparse.Namespace) -> None | list[Chapter]:  # noqa: PLR0911
     if args.command == "from-pci":
         if args.source.startswith(("http://", "https://")):
             return get_and_extract_pci_chapters(args.source)
-        return extract_pci_chapters(json.loads(Path(args.source).read_text()))
+        return extract_pci_chapters(
+            json.loads(Path(args.source).read_text(encoding="utf-8")),
+        )
     if args.command == "from-id3":
         # Imported lazily so the optional mutagen dependency is only
         # required for the from-id3 command.
@@ -117,19 +121,23 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    chapters = _extract(args)
-    if not chapters:
-        print("No chapters found.", file=sys.stderr)
+    try:
+        chapters = _extract(args)
+        if not chapters:
+            print("No chapters found.", file=sys.stderr)
+            return 1
+
+        if args.normalize:
+            chapters = normalize_chapters(chapters, strip_titles=True)
+
+        rendered = _emit(chapters, args.to, args.indent)
+        if args.output is not None:
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
+    except (OSError, json.JSONDecodeError, ImportError) as exc:
+        logger.error("%s", exc)  # noqa: TRY400
         return 1
-
-    if args.normalize:
-        chapters = normalize_chapters(chapters, strip_titles=True)
-
-    rendered = _emit(chapters, args.to, args.indent)
-    if args.output is not None:
-        args.output.write_text(rendered + "\n")
-    else:
-        print(rendered)
     return 0
 
 

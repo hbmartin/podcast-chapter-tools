@@ -7,6 +7,12 @@ mutagen_id3 = pytest.importorskip("mutagen.id3")
 from podcast_chapter_tools.id3 import extract_id3_chapters  # noqa: E402
 
 
+def test_extract_id3_chapters_exported():
+    from podcast_chapter_tools import extract_id3_chapters as exported  # noqa: PLC0415
+
+    assert exported is extract_id3_chapters
+
+
 @pytest.fixture
 def mp3_with_chapters(tmp_path: Path) -> Path:
     path = tmp_path / "episode.mp3"
@@ -49,6 +55,44 @@ def test_extract_id3_chapters(mp3_with_chapters):
     assert chapters == [
         (0, "Intro", None, None),
         (310, "Main topic", "https://example.com/topic", None),
+    ]
+
+
+def test_partial_ctoc_keeps_unreferenced_chapters(tmp_path):
+    path = tmp_path / "episode.mp3"
+    path.write_bytes(b"\x00" * 128)
+
+    tags = mutagen_id3.ID3()
+    tags.add(
+        mutagen_id3.CTOC(
+            element_id="toc",
+            flags=mutagen_id3.CTOCFlags.TOP_LEVEL | mutagen_id3.CTOCFlags.ORDERED,
+            child_element_ids=["chp2"],
+            sub_frames=[],
+        ),
+    )
+    tags.add(
+        mutagen_id3.CHAP(
+            element_id="chp2",
+            start_time=310_000,
+            end_time=600_000,
+            sub_frames=[mutagen_id3.TIT2(encoding=3, text=["Main topic"])],
+        ),
+    )
+    tags.add(
+        mutagen_id3.CHAP(
+            element_id="chp1",
+            start_time=0,
+            end_time=310_000,
+            sub_frames=[mutagen_id3.TIT2(encoding=3, text=["Intro"])],
+        ),
+    )
+    tags.save(path)
+
+    chapters = extract_id3_chapters(path)
+    assert chapters == [
+        (310, "Main topic", None, None),
+        (0, "Intro", None, None),
     ]
 
 

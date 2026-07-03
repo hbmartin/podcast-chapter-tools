@@ -10,7 +10,7 @@ from podcast_transcript_convert.file_utils import list_files
 
 
 def _read_json_and_map_id(file_path: str) -> Generator[Object, None, None]:
-    data = json.loads(Path(file_path).read_text())
+    data = json.loads(Path(file_path).read_text(encoding="utf-8"))
     guid = data["metadata"]["guid"]
     title = data["metadata"]["title"]
     for i, item in enumerate(data["segments"]):

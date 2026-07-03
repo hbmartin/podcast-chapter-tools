@@ -12,7 +12,17 @@ def ts_to_secs(time_string: str) -> int:
     are not valid timestamps (non-numeric parts, too many segments, or
     minutes/seconds >= 60 when a larger unit is present).
     """
-    time_parts = time_string.strip().split(".")[0].split(":")
+    raw_time = time_string.strip()
+    whole_seconds, separator, fractional_seconds = raw_time.partition(".")
+    if separator:
+        if not fractional_seconds.isdigit() or "." in fractional_seconds:
+            msg = f"Non-numeric fractional seconds in timestamp: {time_string!r}"
+            raise ValueError(msg)
+        if ":" in fractional_seconds:
+            msg = f"Fractional seconds must be in final segment: {time_string!r}"
+            raise ValueError(msg)
+
+    time_parts = whole_seconds.split(":")
     if len(time_parts) > _MAX_TIME_PARTS:
         msg = f"Too many segments in timestamp: {time_string!r}"
         raise ValueError(msg)

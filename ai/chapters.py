@@ -5,7 +5,7 @@ import tiktoken
 from loguru import logger
 from podcast_transcript_tools.json2simple import json_file_to_simple_file
 
-from ai import (
+from ai.ai import (
     complete,
     prompt_transcript_to_chapters,
 )
@@ -31,10 +31,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     encoder = tiktoken.encoding_for_model("gpt-4o")
-    encoding = encoder.encode(source_path.read_text())
+    encoding = encoder.encode(source_path.read_text(encoding="utf-8"))
     logger.info(f"Document tokens: {len(encoding)}")
 
-    chapters = create_chapters(Path(sys.argv[1]).read_text())
+    chapters = create_chapters(Path(sys.argv[1]).read_text(encoding="utf-8"))
     for model_name, suggestion in chapters.items():
         logger.warning(model_name)
         if suggestion[1]:
@@ -47,6 +47,7 @@ if __name__ == "__main__":
             ),
         ).write_text(
             suggestion[0],
+            encoding="utf-8",
         )
         logger.info(suggestion[0])
     # TODO: write out suggestions to DB

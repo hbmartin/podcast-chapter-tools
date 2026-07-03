@@ -52,11 +52,12 @@ def extract_id3_chapters(audio_file: Path) -> None | list[Chapter]:
 
 
 def _ctoc_order(tags: Any, chap_frames: dict[str, Any]) -> list[str]:  # noqa: ANN401
+    sorted_ids = sorted(chap_frames, key=lambda cid: chap_frames[cid].start_time)
     for ctoc in tags.getall("CTOC"):
         child_ids = [cid for cid in ctoc.child_element_ids if cid in chap_frames]
         if child_ids:
-            return child_ids
-    return sorted(chap_frames, key=lambda cid: chap_frames[cid].start_time)
+            return child_ids + [cid for cid in sorted_ids if cid not in child_ids]
+    return sorted_ids
 
 
 def _chap_to_chapter(chap: Any) -> Chapter:  # noqa: ANN401

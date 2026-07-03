@@ -15,6 +15,7 @@ from .extractors import (
     find_pci_chapters_url,
     get_and_extract_pci_chapters,
 )
+from .id3 import extract_id3_chapters
 from .normalize import normalize_chapters, strip_html
 from .timecodes import secs_to_ts, ts_to_secs
 from .writers import (
@@ -38,6 +39,7 @@ __all__ = [
     "chapters_to_psc_xml",
     "extract_all_psc_chapters_from_file",
     "extract_description_chapters",
+    "extract_id3_chapters",
     "extract_pci_chapters",
     "extract_psc_chapters",
     "extract_psc_chapters_from_file",
