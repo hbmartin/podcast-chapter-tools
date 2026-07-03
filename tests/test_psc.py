@@ -39,6 +39,13 @@ def test_unparseable_feed(tmp_path):
     assert extract_psc_chapters_from_file(bad, "guid-1") is None
 
 
+def test_invalid_utf8_feed_returns_none(tmp_path):
+    bad = tmp_path / "bad.xml"
+    bad.write_bytes(b"\xff")
+    assert extract_psc_chapters_from_file(bad, "guid-1") is None
+    assert extract_all_psc_chapters_from_file(bad) is None
+
+
 def test_feed_without_channel(tmp_path):
     bad = tmp_path / "nochannel.xml"
     bad.write_text("<rss></rss>")

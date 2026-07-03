@@ -15,11 +15,11 @@ def ts_to_secs(time_string: str) -> int:
     raw_time = time_string.strip()
     whole_seconds, separator, fractional_seconds = raw_time.partition(".")
     if separator:
-        if not fractional_seconds.isdigit() or "." in fractional_seconds:
-            msg = f"Non-numeric fractional seconds in timestamp: {time_string!r}"
-            raise ValueError(msg)
         if ":" in fractional_seconds:
             msg = f"Fractional seconds must be in final segment: {time_string!r}"
+            raise ValueError(msg)
+        if not fractional_seconds.isdigit():
+            msg = f"Non-numeric fractional seconds in timestamp: {time_string!r}"
             raise ValueError(msg)
 
     time_parts = whole_seconds.split(":")
