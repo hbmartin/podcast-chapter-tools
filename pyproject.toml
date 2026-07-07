@@ -1,9 +1,10 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.11.27,<0.12"]
+build-backend = "uv_build"
 
-[tool.setuptools]
-packages = ["podcast_chapter_tools"]
+[tool.uv.build-backend]
+module-name = "podcast_chapter_tools"
+module-root = ""
 
 [project]
 name = "podcast-chapter-tools"
@@ -11,7 +12,7 @@ version = "0.2.0"
 description = " Extract and transform podcast chapter information between PodCastIndex chapters, Podlove simple chapters, and description embeds."
 readme = "README.md"
 license = {file = "LICENSE.txt"}
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 authors = [
     { name = "Harold Martin", email = "Harold.Martin@gmail.com" },
 ]
@@ -23,17 +24,19 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 
-dependencies = ["requests"]
+dependencies = [
+    "loguru>=0.7.3",
+    "requests",
+]
 
 [project.optional-dependencies]
 id3 = ["mutagen"]
-lint = ["ruff", "pyroma", "mypy", "types-requests"]
+lint = ["ruff", "pyrefly", "ty", "types-requests"]
 test = ["pytest", "pytest-cov", "mutagen"]
 
 [project.scripts]
@@ -46,14 +49,14 @@ Changelog = "https://github.com/hbmartin/podcast-chapter-tools/blob/main/CHANGEL
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
-exclude = [".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg", ".ipynb_checkpoints", ".mypy_cache", ".nox", ".pants.d", ".pyenv", ".pytest_cache", ".pytype", ".ruff_cache", ".svn", ".tox", ".venv", ".vscode", "__pypackages__", "_build", "buck-out", "build", "dist", "node_modules", "setup.py", "site-packages", "venv"]
+exclude = [".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg", ".ipynb_checkpoints", ".nox", ".pants.d", ".pyenv", ".pytest_cache", ".ruff_cache", ".svn", ".tox", ".venv", ".vscode", "__pypackages__", "_build", "buck-out", "build", "dist", "node_modules", "setup.py", "site-packages", "venv"]
 
 line-length = 88
 indent-width = 4
 
 lint.select = ["ALL"]
 lint.ignore = ["COM812", "D100", "D101", "D103", "D104", "D105", "D107", "D203", "D213", "ERA001", "FBT001", "FIX002", "ICN001", "PTH109", "S113", "S314", "S608", "SIM300", "T201", "TD002", "TD003", "UP040"]
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.format]
 # Use double quotes for strings.
@@ -72,6 +75,18 @@ line-ending = "auto"
 "tests/*" = ["ANN", "ARG001", "ARG005", "D", "E501", "EM101", "INP001", "PLR2004", "PT011", "S101", "TRY003"]
 "ai/*" = ["INP001"]
 "ai/ai/prompts.py" = ["E501"]
+
+[tool.pyrefly]
+project-includes = ["podcast_chapter_tools"]
+search-path = ["."]
+python-version = "3.13"
+
+[tool.ty.environment]
+python-version = "3.13"
+root = ["."]
+
+[tool.ty.src]
+include = ["podcast_chapter_tools"]
 
 [tool.pytest.ini_options]
 pythonpath = "."

@@ -1,5 +1,4 @@
 import json
-import logging
 
 import pytest
 
@@ -50,30 +49,27 @@ def test_from_pci_file(pci_json, tmp_path, capsys):
     assert "5:10 Main topic" in capsys.readouterr().out
 
 
-def test_from_pci_file_bad_json_returns_error(tmp_path, caplog):
+def test_from_pci_file_bad_json_returns_error(tmp_path, capsys):
     source = tmp_path / "chapters.json"
     source.write_text("{")
-    with caplog.at_level(logging.ERROR):
-        assert main(["from-pci", str(source)]) == 1
-    assert "Expecting" in caplog.text
+    assert main(["from-pci", str(source)]) == 1
+    assert "Expecting" in capsys.readouterr().err
 
 
-def test_from_pci_file_invalid_utf8_returns_error(tmp_path, caplog):
+def test_from_pci_file_invalid_utf8_returns_error(tmp_path, capsys):
     source = tmp_path / "chapters.json"
     source.write_bytes(b"\xff")
-    with caplog.at_level(logging.ERROR):
-        assert main(["from-pci", str(source)]) == 1
-    assert "utf-8" in caplog.text
+    assert main(["from-pci", str(source)]) == 1
+    assert "utf-8" in capsys.readouterr().err
 
 
-def test_from_id3_missing_optional_dependency(tmp_path, monkeypatch, caplog):
+def test_from_id3_missing_optional_dependency(tmp_path, monkeypatch, capsys):
     source = tmp_path / "episode.mp3"
     source.write_bytes(b"\x00" * 128)
     monkeypatch.setattr(id3, "_id3", None)
 
-    with caplog.at_level(logging.ERROR):
-        assert main(["from-id3", str(source)]) == 1
-    assert "mutagen is required" in caplog.text
+    assert main(["from-id3", str(source)]) == 1
+    assert "mutagen is required" in capsys.readouterr().err
 
 
 def test_output_file(description_file, tmp_path):

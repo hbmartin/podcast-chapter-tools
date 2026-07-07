@@ -10,9 +10,10 @@ Examples::
 
 import argparse
 import json
-import logging
 import sys
 from pathlib import Path
+
+from loguru import logger
 
 from .entities import Chapter
 from .extractors import (
@@ -30,8 +31,6 @@ from .writers import (
 )
 
 FORMATS = ("pci", "psc", "description")
-
-logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,9 +115,11 @@ def _emit(chapters: list[Chapter], fmt: str, indent: int) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level="DEBUG" if args.verbose else "WARNING",
+        format="{level} {name}: {message}",
     )
 
     try:
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(rendered)
     except (OSError, ValueError, ImportError) as exc:
-        logger.error("%s", exc)  # noqa: TRY400
+        logger.error("{}", exc)
         return 1
     return 0
 

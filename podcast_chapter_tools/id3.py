@@ -5,20 +5,22 @@ Requires the ``mutagen`` optional dependency::
     pip install podcast-chapter-tools[id3]
 """
 
-import logging
 from pathlib import Path
 from typing import Any
 
-from .entities import Chapter
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from .entities import Chapter
 
 _MS_PER_SEC = 1000
 
+_id3: Any = None
 try:
-    from mutagen import id3 as _id3
+    from mutagen import id3
 except ImportError:  # pragma: no cover - exercised only without the extra
-    _id3 = None  # type: ignore[assignment]
+    pass
+else:
+    _id3 = id3
 
 
 def extract_id3_chapters(audio_file: Path) -> None | list[Chapter]:
@@ -34,13 +36,13 @@ def extract_id3_chapters(audio_file: Path) -> None | list[Chapter]:
         )
         raise ImportError(msg)
     if not audio_file.exists():
-        logger.error("File not found %s", audio_file)
+        logger.error("File not found {}", audio_file)
         return None
 
     try:
         tags = _id3.ID3(audio_file)
     except _id3.ID3NoHeaderError:
-        logger.info("No ID3 header in %s", audio_file)
+        logger.info("No ID3 header in {}", audio_file)
         return None
 
     chap_frames = {frame.element_id: frame for frame in tags.getall("CHAP")}
