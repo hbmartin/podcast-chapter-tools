@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Dropped older Python releases; CI now runs on Python 3.13 and 3.14.
+- Switched packaging to the uv build backend.
+- Switched type checking to Pyrefly and ty.
+- Switched core package logging to Loguru.
+- CI now installs with uv, checks Ruff formatting, runs the test suite, and
+  verifies package builds with `uv build`.
+
 ## [0.2.0] - 2026-07-03
 
 ### Added
@@ -26,14 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `strip_html` helpers; `extract_description_chapters` gained a
   `strip_html` keyword.
 - Public `ts_to_secs` / `secs_to_ts` timestamp helpers with validation.
-- A full pytest suite, run in CI across Python 3.11-3.13.
+- A full pytest suite, run in CI across supported Python versions.
 
 ### Changed
 
 - Description parsing now recognizes plain-text chapter lists (previously
   only HTML-delimited lists matched) and extracts PSC `href`/`image`
   attributes.
-- Extractors log through the standard `logging` module instead of printing.
+- Extractors log through Loguru instead of printing.
 - HTTP requests now have a default 30-second timeout (configurable via the
   `timeout` parameter).
 - `get_and_extract_pci_chapters`'s `headers` and `archive_path_json`
@@ -44,8 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minutes/seconds >= 60) instead of silently misreading them.
 - `ChapterType` gained a vendor-neutral `AI` member; `GEMINI`, `OPENAI`, and
   `SONNET` are deprecated.
-- CI runs `ruff format --check` instead of black, runs the test suite, and
-  triggers on pull requests.
+- CI runs `ruff format --check`, runs the test suite, and triggers on pull
+  requests.
 
 ## [0.1.0] - 2024
 

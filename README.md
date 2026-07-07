@@ -2,8 +2,9 @@
 
 [![Lint and Test](https://github.com/hbmartin/podcast-chapter-tools/actions/workflows/lint.yml/badge.svg)](https://github.com/hbmartin/podcast-chapter-tools/actions/workflows/lint.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Checked with mypy](https://img.shields.io/badge/mypy-checked-blue.svg)](https://mypy-lang.org/)
-[![twitter](https://img.shields.io/badge/@hmartin-00aced.svg?logo=twitter&logoColor=black)](https://twitter.com/hmartin)
+[![Checked with Pyrefly](https://img.shields.io/badge/pyrefly-checked-blue.svg)](https://pyrefly.org/)
+[![Checked with ty](https://img.shields.io/badge/ty-checked-blue.svg)](https://docs.astral.sh/ty/)
+[![twitter](https://img.shields.io/badge/@hmartin-00aced.svg?logo=twitter&logoColor=white)](https://twitter.com/hmartin)
 
 <img src=".idea/icon.svg" width="100" align="right">
 
@@ -86,14 +87,13 @@ Other useful entry points:
 ```bash
 git clone git@github.com:hbmartin/podcast-chapter-tools.git
 cd podcast-chapter-tools
-python3 -m venv venv
-source venv/bin/activate
-pip install -e '.[lint,test]'
+uv sync --extra lint --extra test
 
-pytest
-ruff check .
-ruff format --check .
-mypy podcast_chapter_tools
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run pyrefly check
+uv run ty check
 ```
 
 The `ai/` directory contains experimental scripts for generating chapters

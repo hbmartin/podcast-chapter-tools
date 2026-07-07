@@ -1,11 +1,11 @@
 import json
-import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
 import requests
+from loguru import logger
 
 from .entities import (
     PCI,
@@ -17,8 +17,6 @@ from .entities import (
 )
 from .normalize import strip_html as _strip_html
 from .timecodes import ts_to_secs
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -61,7 +59,7 @@ def _desc_matches_to_chapters(
         try:
             chapters.append(_extract_desc_ts_and_title(match, strip_html=strip_html))
         except ValueError:
-            logger.debug("Skipping invalid chapter timestamp: %s", match[0])
+            logger.debug("Skipping invalid chapter timestamp: {}", match[0])
     return chapters if len(chapters) > 1 else None
 
 
@@ -108,17 +106,17 @@ def get_and_extract_pci_chapters(
         try:
             chapters_json = json.loads(archive_path_json.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            logger.warning("Failed to read archived PCI chapters %s", archive_path_json)
+            logger.warning("Failed to read archived PCI chapters {}", archive_path_json)
             return None
     else:
         try:
             response = requests.get(url, headers=headers or {}, timeout=timeout)
         except requests.RequestException as exc:
-            logger.error("Error fetching chapters %s: %s", url, exc)  # noqa: TRY400
+            logger.error("Error fetching chapters {}: {}", url, exc)
             return None
         if not response.ok:
             logger.error(
-                "Error %s fetching chapters %s",
+                "Error {} fetching chapters {}",
                 response.status_code,
                 url,
             )
@@ -126,7 +124,7 @@ def get_and_extract_pci_chapters(
         try:
             chapters_json = response.json()
         except ValueError:
-            logger.warning("Failed to decode PCI chapters JSON %s", url)
+            logger.warning("Failed to decode PCI chapters JSON {}", url)
             return None
         if archive_path_json:
             try:
@@ -136,14 +134,14 @@ def get_and_extract_pci_chapters(
                 )
             except OSError as exc:
                 logger.warning(
-                    "Failed to write archived PCI chapters %s: %s",
+                    "Failed to write archived PCI chapters {}: {}",
                     archive_path_json,
                     exc,
                 )
 
     chapters = extract_pci_chapters(chapters_json)
     if chapters is None:
-        logger.warning("Failed to extract PCI for %s @ %s", url, archive_path_json)
+        logger.warning("Failed to extract PCI for {} @ {}", url, archive_path_json)
     return chapters
 
 
@@ -160,10 +158,10 @@ def _parse_feed(feed_xml: str, source: str) -> ElementTree.Element | None:
     try:
         root = ElementTree.fromstring(feed_xml)
     except ElementTree.ParseError:
-        logger.warning("Failed to parse podcast feed %s", source)
+        logger.warning("Failed to parse podcast feed {}", source)
         return None
     if root.find("./channel") is None:
-        logger.warning("Failed to find channel in podcast feed %s", source)
+        logger.warning("Failed to find channel in podcast feed {}", source)
         return None
     return root
 
@@ -172,14 +170,14 @@ def _read_feed_file(feed_file: Path) -> str | None:
     try:
         return feed_file.read_text(encoding="utf-8")
     except (OSError, ValueError) as exc:
-        logger.error("Failed to read feed file %s: %s", feed_file, exc)  # noqa: TRY400
+        logger.error("Failed to read feed file {}: {}", feed_file, exc)
         return None
 
 
 def extract_psc_chapters_from_file(feed_file: Path, guid: str) -> None | list[Chapter]:
     """Extract PSC chapters for the episode with ``guid`` from a feed file."""
     if not feed_file.exists():
-        logger.error("File not found %s", feed_file)
+        logger.error("File not found {}", feed_file)
         return None
     feed_content = _read_feed_file(feed_file)
     if feed_content is None:
@@ -200,10 +198,10 @@ def extract_psc_chapters_from_url(
     try:
         response = requests.get(feed_url, headers=headers or {}, timeout=timeout)
     except requests.RequestException as exc:
-        logger.error("Error fetching feed %s: %s", feed_url, exc)  # noqa: TRY400
+        logger.error("Error fetching feed {}: {}", feed_url, exc)
         return None
     if not response.ok:
-        logger.error("Error %s fetching feed %s", response.status_code, feed_url)
+        logger.error("Error {} fetching feed {}", response.status_code, feed_url)
         return None
     root = _parse_feed(response.text, feed_url)
     if root is None:
@@ -221,7 +219,7 @@ def _extract_psc_chapters_for_guid(
         if found_guid is not None and found_guid.text == guid:
             if (psc_chapters := item.find(f"./{PSC}chapters")) is not None:
                 return extract_psc_chapters(psc_chapters)
-            logger.info("Failed PSC chapters for episode %s in %s", guid, source)
+            logger.info("Failed PSC chapters for episode {} in {}", guid, source)
             return None
     return None
 
@@ -231,7 +229,7 @@ def extract_all_psc_chapters_from_file(
 ) -> None | dict[str, list[Chapter]]:
     """Extract PSC chapters for every episode in a feed file, keyed by GUID."""
     if not feed_file.exists():
-        logger.error("File not found %s", feed_file)
+        logger.error("File not found {}", feed_file)
         return None
     feed_content = _read_feed_file(feed_file)
     if feed_content is None:
@@ -268,7 +266,7 @@ def extract_psc_chapters(psc_chapters: ElementTree.Element) -> None | list[Chapt
             for c in psc_chapters
         ]
     except (KeyError, ValueError, TypeError):
-        logger.warning("Failed to extract PSC chapters %s", psc_chapters)
+        logger.warning("Failed to extract PSC chapters {}", psc_chapters)
         return None
 
 
@@ -279,7 +277,7 @@ def find_pci_chapters_url(feed_file: Path, guid: str) -> str | None:
     pass to ``get_and_extract_pci_chapters``, or ``None`` if not declared.
     """
     if not feed_file.exists():
-        logger.error("File not found %s", feed_file)
+        logger.error("File not found {}", feed_file)
         return None
     feed_content = _read_feed_file(feed_file)
     if feed_content is None:
