@@ -1,9 +1,12 @@
+import argparse
 import json
+import runpy
+import sys
 
 import pytest
 
-from podcast_chapter_tools import id3
-from podcast_chapter_tools.cli import main
+from podcast_chapter_tools import cli, id3
+from podcast_chapter_tools.cli import _extract, main
 
 DESCRIPTION = """0:00 Intro
 5:10 Main topic
@@ -40,6 +43,39 @@ def test_from_psc(feed_file, capsys):
     assert main(["from-psc", str(feed_file), "--guid", "guid-1"]) == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["chapters"][0] == {"startTime": 0, "title": "Intro"}
+
+
+def test_from_psc_url(monkeypatch, capsys):
+    captured = {}
+
+    def fake_from_url(feed, guid):
+        captured["feed"] = feed
+        captured["guid"] = guid
+        return [(0, "Intro", None, None), (310, "Main topic", None, None)]
+
+    monkeypatch.setattr(cli, "extract_psc_chapters_from_url", fake_from_url)
+    args = ["from-psc", "https://example.com/feed.xml", "--guid", "g1", "--to", "psc"]
+    assert main(args) == 0
+    assert captured == {"feed": "https://example.com/feed.xml", "guid": "g1"}
+    assert 'title="Main topic"' in capsys.readouterr().out
+
+
+def test_from_pci_url(monkeypatch, capsys):
+    captured = {}
+
+    def fake_get(source):
+        captured["source"] = source
+        return [(0, "Intro", None, None), (310, "Main topic", None, None)]
+
+    monkeypatch.setattr(cli, "get_and_extract_pci_chapters", fake_get)
+    assert main(["from-pci", "https://example.com/chapters.json"]) == 0
+    assert captured == {"source": "https://example.com/chapters.json"}
+    assert "startTime" in capsys.readouterr().out
+
+
+def test_extract_unknown_command_returns_none():
+    args = argparse.Namespace(command="from-nowhere")
+    assert _extract(args) is None
 
 
 def test_from_pci_file(pci_json, tmp_path, capsys):
@@ -91,3 +127,15 @@ def test_normalize_flag(tmp_path, capsys):
     assert main(["from-description", str(notes), "--normalize"]) == 0
     doc = json.loads(capsys.readouterr().out)
     assert [c["title"] for c in doc["chapters"]] == ["First", "Second"]
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_module_entrypoint(description_file, monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["podcast-chapters", "from-description", str(description_file)],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("podcast_chapter_tools.cli", run_name="__main__")
+    assert exc_info.value.code == 0

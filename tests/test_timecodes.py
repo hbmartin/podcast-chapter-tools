@@ -49,6 +49,10 @@ class TestTsToSecs:
         with pytest.raises(ValueError):
             ts_to_secs("1:00:99")
 
+    def test_negative_segment(self):
+        with pytest.raises(ValueError, match="Negative segment"):
+            ts_to_secs("-5")
+
 
 class TestSecsToTs:
     def test_under_a_minute(self):
