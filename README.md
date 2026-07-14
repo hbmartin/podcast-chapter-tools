@@ -87,7 +87,7 @@ Other useful entry points:
 ```bash
 git clone git@github.com:hbmartin/podcast-chapter-tools.git
 cd podcast-chapter-tools
-uv sync --extra lint --extra test
+uv sync
 
 uv run pytest
 uv run ruff check .

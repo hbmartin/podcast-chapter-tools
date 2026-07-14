@@ -1,4 +1,5 @@
 import json
+from unittest.mock import Mock
 
 from conftest import FakeResponse
 
@@ -30,7 +31,7 @@ def test_extract_pci_chapters_bad_start(pci_json):
 
 def test_get_and_extract_fetches(monkeypatch, pci_json):
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data=pci_json),
     )
@@ -40,31 +41,31 @@ def test_get_and_extract_fetches(monkeypatch, pci_json):
 
 def test_get_and_extract_http_error(monkeypatch):
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
-        lambda *a, **kw: FakeResponse(ok=False, status_code=500),
+        lambda *a, **kw: FakeResponse(is_success=False, status_code=500),
     )
     assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
 
 
 def test_get_and_extract_request_error(monkeypatch):
     def boom(*a, **kw):
-        raise extractors.requests.RequestException("timeout")
+        raise extractors.httpx2.RequestError("timeout")
 
-    monkeypatch.setattr(extractors.requests, "get", boom)
+    monkeypatch.setattr(extractors.httpx2, "get", boom)
     assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
 
 
 def test_get_and_extract_bad_json_response(monkeypatch):
     class BadJsonResponse:
-        ok = True
+        is_success = True
         status_code = 200
 
         def json(self):
             raise ValueError("bad json")
 
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
         lambda *a, **kw: BadJsonResponse(),
     )
@@ -73,7 +74,7 @@ def test_get_and_extract_bad_json_response(monkeypatch):
 
 def test_get_and_extract_writes_archive(monkeypatch, pci_json, tmp_path):
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data=pci_json),
     )
@@ -92,7 +93,7 @@ def test_get_and_extract_returns_chapters_when_archive_write_fails(
     tmp_path,
 ):
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data=pci_json),
     )
@@ -117,7 +118,7 @@ def test_get_and_extract_reads_archive(monkeypatch, pci_json, tmp_path):
     def boom(*a, **kw):
         raise AssertionError("should not fetch when archive exists")
 
-    monkeypatch.setattr(extractors.requests, "get", boom)
+    monkeypatch.setattr(extractors.httpx2, "get", boom)
     chapters = get_and_extract_pci_chapters(
         "https://example.com/chapters.json",
         archive_path_json=archive,
@@ -178,11 +179,15 @@ def test_find_pci_chapters_url_unparseable_feed(tmp_path):
 
 
 def test_get_and_extract_logs_when_extraction_fails(monkeypatch):
+    warning = Mock(wraps=extractors.logger.warning)
+    monkeypatch.setattr(extractors.logger, "warning", warning)
+    url = "https://example.com/chapters.json"
     # A well-formed JSON response that has no "chapters" key: the fetch
     # succeeds but extraction returns None.
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data={"version": "1.2.0"}),
     )
-    assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
+    assert get_and_extract_pci_chapters(url) is None
+    warning.assert_called_with("Failed to extract PCI for {} @ {}", url, None)

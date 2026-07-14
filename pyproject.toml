@@ -30,14 +30,22 @@ classifiers = [
 ]
 
 dependencies = [
+    "httpx2",
     "loguru>=0.7.3",
-    "requests",
 ]
 
 [project.optional-dependencies]
 id3 = ["mutagen"]
-lint = ["ruff", "pyrefly", "ty", "types-requests"]
-test = ["pytest", "pytest-cov", "mutagen"]
+
+[dependency-groups]
+dev = [
+    "mutagen",
+    "pyrefly",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "ty",
+]
 
 [project.scripts]
 podcast-chapters = "podcast_chapter_tools.cli:main"
