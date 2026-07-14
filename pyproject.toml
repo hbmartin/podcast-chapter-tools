@@ -36,8 +36,17 @@ dependencies = [
 
 [project.optional-dependencies]
 id3 = ["mutagen"]
-lint = ["ruff", "pyrefly", "ty", "types-requests"]
-test = ["pytest", "pytest-cov", "mutagen"]
+
+[dependency-groups]
+dev = [
+    "mutagen",
+    "pyrefly",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "ty",
+    "types-requests",
+]
 
 [project.scripts]
 podcast-chapters = "podcast_chapter_tools.cli:main"

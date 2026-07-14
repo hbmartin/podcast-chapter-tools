@@ -193,32 +193,36 @@ dependencies = [
 id3 = [
     { name = "mutagen" },
 ]
-lint = [
+
+[package.dev-dependencies]
+dev = [
+    { name = "mutagen" },
     { name = "pyrefly" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
     { name = "ruff" },
     { name = "ty" },
     { name = "types-requests" },
-]
-test = [
-    { name = "mutagen" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mutagen", marker = "extra == 'id3'" },
-    { name = "mutagen", marker = "extra == 'test'" },
-    { name = "pyrefly", marker = "extra == 'lint'" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-cov", marker = "extra == 'test'" },
     { name = "requests" },
-    { name = "ruff", marker = "extra == 'lint'" },
-    { name = "ty", marker = "extra == 'lint'" },
-    { name = "types-requests", marker = "extra == 'lint'" },
 ]
-provides-extras = ["id3", "lint", "test"]
+provides-extras = ["id3"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mutagen" },
+    { name = "pyrefly" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "ty" },
+    { name = "types-requests" },
+]
 
 [[package]]
 name = "pygments"
