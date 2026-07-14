@@ -66,6 +66,18 @@ def test_retry_splits_single_run():
     assert chapters[1].title == "Topic two"
 
 
+def test_invalid_timestamp_is_skipped():
+    # "99:99" matches the chapter regex but is not a valid timestamp
+    # (minutes/seconds must be < 60), so it is dropped while the valid
+    # chapters are kept.
+    description = "0:00 Intro\n99:99 Bad timestamp\n10:00 The end\n"
+    chapters = extract_description_chapters(description)
+    assert chapters == [
+        (0, "Intro", None, None),
+        (600, "The end", None, None),
+    ]
+
+
 def test_no_chapters_returns_none():
     assert extract_description_chapters("Just some show notes.") is None
 

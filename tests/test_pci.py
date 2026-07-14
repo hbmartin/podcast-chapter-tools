@@ -165,3 +165,24 @@ def test_find_pci_chapters_url_invalid_utf8(tmp_path):
     feed = tmp_path / "feed.xml"
     feed.write_bytes(b"\xff")
     assert find_pci_chapters_url(feed, "guid-1") is None
+
+
+def test_find_pci_chapters_url_missing_file(tmp_path):
+    assert find_pci_chapters_url(tmp_path / "nope.xml", "guid-1") is None
+
+
+def test_find_pci_chapters_url_unparseable_feed(tmp_path):
+    feed = tmp_path / "feed.xml"
+    feed.write_text("not xml at all <<<")
+    assert find_pci_chapters_url(feed, "guid-1") is None
+
+
+def test_get_and_extract_logs_when_extraction_fails(monkeypatch):
+    # A well-formed JSON response that has no "chapters" key: the fetch
+    # succeeds but extraction returns None.
+    monkeypatch.setattr(
+        extractors.requests,
+        "get",
+        lambda *a, **kw: FakeResponse(json_data={"version": "1.2.0"}),
+    )
+    assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None

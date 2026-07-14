@@ -96,6 +96,36 @@ def test_partial_ctoc_keeps_unreferenced_chapters(tmp_path):
     ]
 
 
+def test_chapters_without_ctoc_are_sorted_by_start(tmp_path):
+    path = tmp_path / "episode.mp3"
+    path.write_bytes(b"\x00" * 128)
+
+    tags = mutagen_id3.ID3()
+    tags.add(
+        mutagen_id3.CHAP(
+            element_id="chp2",
+            start_time=310_000,
+            end_time=600_000,
+            sub_frames=[mutagen_id3.TIT2(encoding=3, text=["Main topic"])],
+        ),
+    )
+    tags.add(
+        mutagen_id3.CHAP(
+            element_id="chp1",
+            start_time=0,
+            end_time=310_000,
+            sub_frames=[mutagen_id3.TIT2(encoding=3, text=["Intro"])],
+        ),
+    )
+    tags.save(path)
+
+    chapters = extract_id3_chapters(path)
+    assert chapters == [
+        (0, "Intro", None, None),
+        (310, "Main topic", None, None),
+    ]
+
+
 def test_missing_file(tmp_path):
     assert extract_id3_chapters(tmp_path / "nope.mp3") is None
 
