@@ -61,8 +61,8 @@ def pci_json() -> dict:
 
 
 class FakeResponse:
-    def __init__(self, *, ok=True, status_code=200, json_data=None, text=""):
-        self.ok = ok
+    def __init__(self, *, is_success=True, status_code=200, json_data=None, text=""):
+        self.is_success = is_success
         self.status_code = status_code
         self._json_data = json_data
         self.text = text

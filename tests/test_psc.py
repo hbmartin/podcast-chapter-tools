@@ -93,7 +93,7 @@ def test_iter_feed_items_without_channel():
 
 def test_extract_from_url_unparseable_feed(monkeypatch):
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(text="not xml at all <<<"),
     )
@@ -119,23 +119,25 @@ def test_extract_from_element_missing_title():
 def test_extract_from_url(monkeypatch):
     captured = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, *, follow_redirects=False):
         captured["url"] = url
         captured["timeout"] = timeout
+        captured["follow_redirects"] = follow_redirects
         return FakeResponse(text=FEED_XML)
 
-    monkeypatch.setattr(extractors.requests, "get", fake_get)
+    monkeypatch.setattr(extractors.httpx2, "get", fake_get)
     chapters = extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1")
     assert chapters == EXPECTED
     assert captured["url"] == "https://example.com/feed.xml"
     assert captured["timeout"] is not None
+    assert captured["follow_redirects"] is True
 
 
 def test_extract_from_url_http_error(monkeypatch):
     monkeypatch.setattr(
-        extractors.requests,
+        extractors.httpx2,
         "get",
-        lambda *a, **kw: FakeResponse(ok=False, status_code=404),
+        lambda *a, **kw: FakeResponse(is_success=False, status_code=404),
     )
     assert (
         extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1") is None
@@ -144,9 +146,9 @@ def test_extract_from_url_http_error(monkeypatch):
 
 def test_extract_from_url_request_error(monkeypatch):
     def boom(*a, **kw):
-        raise extractors.requests.RequestException("timeout")
+        raise extractors.httpx2.RequestError("timeout")
 
-    monkeypatch.setattr(extractors.requests, "get", boom)
+    monkeypatch.setattr(extractors.httpx2, "get", boom)
     assert (
         extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1") is None
     )

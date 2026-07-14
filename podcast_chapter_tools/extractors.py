@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-import requests
+import httpx2
 from loguru import logger
 
 from .entities import (
@@ -110,11 +110,16 @@ def get_and_extract_pci_chapters(
             return None
     else:
         try:
-            response = requests.get(url, headers=headers or {}, timeout=timeout)
-        except requests.RequestException as exc:
+            response = httpx2.get(
+                url,
+                headers=headers or {},
+                timeout=timeout,
+                follow_redirects=True,
+            )
+        except httpx2.RequestError as exc:
             logger.error("Error fetching chapters {}: {}", url, exc)
             return None
-        if not response.ok:
+        if not response.is_success:
             logger.error(
                 "Error {} fetching chapters {}",
                 response.status_code,
@@ -196,11 +201,16 @@ def extract_psc_chapters_from_url(
 ) -> None | list[Chapter]:
     """Fetch a podcast feed and extract PSC chapters for ``guid``."""
     try:
-        response = requests.get(feed_url, headers=headers or {}, timeout=timeout)
-    except requests.RequestException as exc:
+        response = httpx2.get(
+            feed_url,
+            headers=headers or {},
+            timeout=timeout,
+            follow_redirects=True,
+        )
+    except httpx2.RequestError as exc:
         logger.error("Error fetching feed {}: {}", feed_url, exc)
         return None
-    if not response.ok:
+    if not response.is_success:
         logger.error("Error {} fetching feed {}", response.status_code, feed_url)
         return None
     root = _parse_feed(response.text, feed_url)

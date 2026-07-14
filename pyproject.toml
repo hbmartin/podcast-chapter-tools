@@ -30,8 +30,8 @@ classifiers = [
 ]
 
 dependencies = [
+    "httpx2",
     "loguru>=0.7.3",
-    "requests",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +45,6 @@ dev = [
     "pytest-cov",
     "ruff",
     "ty",
-    "types-requests",
 ]
 
 [project.scripts]

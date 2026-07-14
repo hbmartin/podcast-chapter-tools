@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replaced `requests` with the typed `httpx2` HTTP client while preserving
+  redirect-following behavior.
 - Dropped older Python releases; CI now runs on Python 3.13 and 3.14.
 - Switched packaging to the uv build backend.
 - Switched type checking to Pyrefly and ty.
