@@ -1,0 +1,121 @@
+import traceback
+from unittest.mock import Mock
+
+import httpx2
+import pytest
+
+from podcast_chapter_tools import (
+    ChapterParseError,
+    extract_all_psc_chapters_from_file,
+    extract_psc_chapters_from_file,
+    extract_psc_chapters_from_url,
+    find_pci_chapters_url,
+    parse_feed_chapters,
+    parsers,
+    transport,
+)
+from podcast_chapter_tools.cli import main
+
+URL = "https://example.com/feed.xml"
+FEED = '<rss xmlns:psc="http://podlove.org/simple-chapters"><channel><item><guid>g</guid><psc:chapters><psc:chapter start="0:00" title="Café"/></psc:chapters></item></channel></rss>'
+
+
+def test_unknown_xml_codec_is_typed_and_adapters_recover(tmp_path, monkeypatch, capsys):
+    xml = b'<?xml version="1.0" encoding="made-up-codec"?><rss><channel/></rss>'
+    with pytest.raises(ChapterParseError) as caught:
+        parse_feed_chapters(xml, source=URL)
+    assert isinstance(caught.value.__cause__, LookupError)
+    assert caught.value.source == URL
+    path = tmp_path / "feed.xml"
+    path.write_bytes(xml)
+    assert extract_psc_chapters_from_file(path, "g") is None
+    assert extract_all_psc_chapters_from_file(path) is None
+    assert find_pci_chapters_url(path, "g") is None
+    monkeypatch.setattr(
+        transport.httpx2, "get", Mock(return_value=httpx2.Response(200, content=xml))
+    )
+    assert extract_psc_chapters_from_url(URL, "g") is None
+    for source in [str(path), URL]:
+        assert main(["from-psc", source, "--guid", "g"]) == 1
+        assert "ChapterParseError" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("declaration", ["", '<?xml version="1.0" encoding="UTF-8"?>'])
+def test_http_charset_is_respected_even_with_conflicting_declaration(
+    declaration, monkeypatch, capsys
+):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": 'application/rss+xml; charset="iso-8859-1"'},
+        content=(declaration + FEED).encode("latin-1"),
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    assert extract_psc_chapters_from_url(URL, "g")[0].title == "Café"
+    assert main(["from-psc", URL, "--guid", "g", "--to", "description"]) == 0
+    assert capsys.readouterr().out == "0:00 Café\n"
+
+
+@pytest.mark.parametrize("encoding", ["iso-8859-1", "utf-16", "utf-8-sig"])
+def test_feed_bytes_keep_declared_encodings_and_boms(encoding, tmp_path, monkeypatch):
+    declared = "UTF-8" if encoding == "utf-8-sig" else encoding
+    xml = (f'<?xml version="1.0" encoding="{declared}"?>' + FEED).encode(encoding)
+    path = tmp_path / "feed.xml"
+    path.write_bytes(xml)
+    assert extract_psc_chapters_from_file(path, "g")[0].title == "Café"
+    monkeypatch.setattr(
+        transport.httpx2, "get", Mock(return_value=httpx2.Response(200, content=xml))
+    )
+    assert extract_psc_chapters_from_url(URL, "g")[0].title == "Café"
+
+
+@pytest.mark.parametrize(
+    ("charset", "content"), [("unknown-codec", b"<rss/>"), ("utf-8", b"\xff")]
+)
+def test_invalid_http_charset_and_bytes_are_typed(
+    charset, content, monkeypatch, capsys
+):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": f"application/xml; charset={charset}"},
+        content=content,
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    assert extract_psc_chapters_from_url(URL, "g") is None
+    assert main(["from-psc", URL, "--guid", "g"]) == 1
+    assert "ChapterParseError" in capsys.readouterr().err
+
+
+def test_cached_failures_have_bounded_tracebacks_and_parse_once(monkeypatch):
+    parse = Mock(wraps=parsers.parse_psc_chapters)
+    monkeypatch.setattr(parsers, "parse_psc_chapters", parse)
+    index = parse_feed_chapters(FEED.replace('start="0:00"', 'start="bad"'), source=URL)
+    errors = []
+    depths = []
+    for _ in range(10):
+        with pytest.raises(ChapterParseError) as caught:
+            index.psc_for_guid("g")
+        errors.append(caught.value)
+        depths.append(len(traceback.extract_tb(caught.value.__traceback__)))
+        assert caught.value.source == URL
+        assert caught.value.guid == "g"
+        assert caught.value.issues[0].code == "invalid_start"
+    assert len({id(exc) for exc in errors}) == len(errors)
+    assert len(set(depths)) == 1
+    assert parse.call_count == 1
+
+
+def test_duplicate_without_chapters_keeps_first_episode_in_all_adapters(
+    tmp_path, monkeypatch
+):
+    xml = FEED.replace("<channel>", "<channel><item><guid>g</guid></item>")
+    index = parse_feed_chapters(xml)
+    assert not index.psc_for_guid("g").chapters
+    assert index.issues[0].code == "duplicate_guid"
+    path = tmp_path / "feed.xml"
+    path.write_text(xml, encoding="utf-8")
+    assert extract_all_psc_chapters_from_file(path) == {}
+    assert extract_psc_chapters_from_file(path, "g") is None
+    monkeypatch.setattr(
+        transport.httpx2, "get", Mock(return_value=httpx2.Response(200, text=xml))
+    )
+    assert extract_psc_chapters_from_url(URL, "g") is None

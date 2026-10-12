@@ -53,13 +53,12 @@ jobs:
       run: uv run --locked pyroma --min 10 .
 
   garuff:
-    name: Garuff (experimental, Python 3.14)
+    name: Garuff (Python 3.14)
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 10
-    # Report both style findings and checker failures during this evaluation.
-    continue-on-error: true
+    # Enforce configured rules and fail on setup or checker errors.
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       with:
@@ -72,13 +71,15 @@ jobs:
       uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
       with:
         enable-cache: true
+        cache-suffix: garuff
     - name: Install the pinned Garuff checker
       run: uv sync --locked --only-group garuff --python 3.14
     - name: Check Python and agent files with Garuff
       id: garuff
       shell: bash
+      env:
+        PYTHONUNBUFFERED: "1"
       run: |
-        set -o pipefail
         uv run --locked --only-group garuff --python 3.14 garuff check . 2>&1 | tee "$RUNNER_TEMP/garuff-report.txt"
     - name: Add Garuff results to the job summary
       if: ${{ always() }}
@@ -86,14 +87,22 @@ jobs:
         GARUFF_OUTCOME: ${{ steps.garuff.outcome }}
       shell: bash
       run: |
-        {
-          printf 'Garuff check outcome: %s\n\n' "$GARUFF_OUTCOME"
-          printf 'Experimental checker: findings and execution failures do not block CI.\n\n'
-          if [ -f "$RUNNER_TEMP/garuff-report.txt" ]; then
-            printf '```text\n'
-            cat "$RUNNER_TEMP/garuff-report.txt"
-            printf '\n```\n'
-          else
-            printf 'No checker report was produced; review the setup and installation logs.\n'
-          fi
-        } >> "$GITHUB_STEP_SUMMARY"
+        python - <<'PY'
+        import os
+        import re
+        from pathlib import Path
+
+        outcome = os.environ.get("GARUFF_OUTCOME") or "not run"
+        summary = f"Garuff check outcome: {outcome}\n\n"
+        summary += "Garuff is enforced: findings and setup or checker errors fail CI.\n\n"
+        report_path = Path(os.environ["RUNNER_TEMP"]) / "garuff-report.txt"
+        if report_path.is_file():
+            report = report_path.read_text(encoding="utf-8", errors="replace")
+            longest = max((len(match[0]) for match in re.finditer(r"`+", report)), default=0)
+            fence = "`" * max(3, longest + 1)
+            summary += f"{fence}text\n{report}\n{fence}\n"
+        else:
+            summary += "No checker report was produced; review the setup and installation logs.\n"
+        with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as output:
+            output.write(summary)
+        PY

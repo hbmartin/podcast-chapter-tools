@@ -6,6 +6,7 @@ from objective import Client
 
 
 def create_finetune_index(objective_api_key: str, index_id: str) -> None:
+    """Finetune an Objective index on example queries and watch its status."""
     queries = [
         {"query": "pytest"},
         {"query": "tdd"},

@@ -24,8 +24,9 @@ class Chapter(NamedTuple):
     image: str | None = None
 
 
+# Preserve positional construction of public chapter values.
 @dataclass(frozen=True, slots=True)
-class ChapterData:
+class ChapterData:  # garuff: ignore[GAC009]
     """A chapter or silent marker, retaining fractional time and PCI metadata."""
 
     start: float
@@ -36,8 +37,9 @@ class ChapterData:
     toc: bool = True
 
 
+# Preserve positional construction of public diagnostics.
 @dataclass(frozen=True, slots=True)
-class ChapterIssue:
+class ChapterIssue:  # garuff: ignore[GAC009]
     """A recoverable validation issue; entry indexes are zero-based."""
 
     index: int | None
@@ -46,17 +48,19 @@ class ChapterIssue:
     message: str
 
 
+# Preserve positional construction of public parse results.
 @dataclass(frozen=True, slots=True)
-class ChapterParseResult:
+class ChapterParseResult:  # garuff: ignore[GAC009]
     """Successfully parsed chapters, possibly empty, with recovery diagnostics."""
 
-    chapters: tuple[ChapterData, ...] = ()
-    issues: tuple[ChapterIssue, ...] = ()
+    # Parsed entries and diagnostics are immutable snapshots.
+    chapters: tuple[ChapterData, ...] = ()  # garuff: ignore[GAC005]
+    issues: tuple[ChapterIssue, ...] = ()  # garuff: ignore[GAC005]
     source: str | None = None
     guid: str | None = None
 
     @property
-    def diagnostics(self) -> tuple[ChapterIssue, ...]:
+    def diagnostics(self) -> tuple[ChapterIssue, ...]:  # garuff: ignore[GAC005]
         """Validation diagnostics, also available through ``issues``."""
         return self.issues
 

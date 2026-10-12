@@ -39,7 +39,8 @@ change as described below.
 ### Changed
 
 - Description parsing defaults to `mode="strict"`: timestamps must begin
-  normalized lines, and at least two usable chapters are required. HTML block
+  normalized lines after optional blockquote, `Chapters:`, bullet, or numbered-list
+  prefixes, and at least two usable chapters are required. HTML block
   tags and `<br>` establish line boundaries. Inline layouts require
   `mode="lenient"` or CLI `--description-mode lenient`.
 - PCI and PSC parsers preserve valid chapters when neighboring entries are
@@ -56,6 +57,8 @@ change as described below.
   fractions, optional titles, end boundaries, and silent markers. PSC and
   description output preserves fractional starts, omits silent markers, and
   cannot retain PCI end boundaries.
+- HTML title stripping follows visible text: `Part<b>One</b>` becomes `PartOne`
+  rather than the pre-1.0 `Part One`. Block tags still establish boundaries.
 - Archives retain their JSON structure and gain an adjacent `.meta.json` sidecar
   containing a schema version, exact requested URL, and SHA-256 digest. Missing
   metadata, corruption, mismatches, and unusable documents trigger one fetch.
@@ -91,6 +94,26 @@ change as described below.
 - Feed lookup recognizes both supported PCI namespace URIs, preferring the
   canonical declaration. Duplicate GUIDs retain the first episode and are reported.
 - File and HTTP feed adapters respect XML-declared encodings.
+- Strict description recognition accepts bullets (`-`, `*`, `+`, `•`) and
+  numbered markers (`1.` and `1)`) followed by whitespace, plus case-insensitive
+  leading `Chapters:` labels. Leading BOM/zero-width space characters no longer
+  drop the first chapter, and the CLI accepts UTF-8-BOM description files.
+- Single trailing timestamp `:`/`.` delimiters no longer produce invalid-start
+  issues. Fractional starts and malformed-timestamp diagnostics are retained;
+  lenient prose mentions without titles are ignored.
+- Unfinished markup cannot consume chapter lines after an unquoted newline.
+  Arbitrary tags and multiline attributes remain supported; script/style closing
+  tags are recognized despite comparisons and quotes in their contents.
+- Feed adapters honor explicit HTTP charsets ahead of XML declarations and keep
+  XML/BOM encoding detection when no HTTP charset is supplied. Unknown XML/HTTP
+  codecs and decoding failures follow the typed parse-error contract.
+- All chapter error types round-trip through pickle without losing context or
+  breaking process pools. Cached feed failures raise fresh exceptions instead of
+  retaining and growing traceback chains.
+- Atomic archive replacement preserves existing file permissions; new archives
+  and sidecars follow the process umask rather than always using mode `0600`.
+- PCI writers serialize integral starts and ends as JSON integers while retaining
+  fractional values.
 
 ### Security
 
@@ -100,6 +123,9 @@ change as described below.
 - Added subprocess regressions with five-second timeouts, alongside tests for
   long inline layouts, parser recovery, rich round trips, verified caches,
   interrupted writes, feed indexing, and CLI integration.
+- Description source mappings use compact spans rather than per-character
+  integer/reference collections. A subprocess regression bounds traced Python
+  allocations for a 5 MiB description with a long title below 64 MiB.
 
 ### Migration
 
@@ -113,6 +139,9 @@ change as described below.
   URL mismatches remain rejected even with this option.
 - Build one feed index per XML document for batches of GUID lookups. Repeated
   calls to single-GUID file/URL wrappers still read or fetch the feed each time.
+- Duplicate GUIDs retain the first episode even when it has no chapters. Legacy
+  bulk extraction now follows this same policy instead of allowing later
+  chapter-bearing duplicates to replace it.
 - Applications that want package logs should call
   `logger.enable("podcast_chapter_tools")` and configure their own handlers.
 - See [README.md](README.md) for API examples and format conversion losses.

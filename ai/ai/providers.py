@@ -28,6 +28,7 @@ ai_calls: set[AiCall] = {
 
 
 def get_env_keys(providers: Iterable[str]) -> dict[str, str]:
+    """Read and trim API keys for the requested providers."""
     keys: dict[str, str] = {
         provider: environ[f"{provider.upper()}_API_KEY"].strip()
         for provider in providers

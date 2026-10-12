@@ -7,6 +7,7 @@ from typing import Literal
 from .entities import ChapterData, ChapterIssue, ChapterParseResult, _re_url
 from .errors import ChapterParseError
 from .markup import DescriptionLine, description_lines, inline_fragment, plain_text
+from .recognition import line_timestamp_start
 from .timecodes import parse_timestamp
 
 DescriptionMode = Literal["strict", "lenient"]
@@ -14,9 +15,16 @@ _MIN_CHAPTERS = 2
 _SEPARATORS = "-\u2013\u2014"
 
 
-def _marker_start(text: str, start: int, end: int) -> int | None:
+def _marker_start(
+    text: str, start: int, end: int, explicit_start: int | None
+) -> int | None:
+    """Return the wrapper start when a timestamp has valid boundaries."""
     marker = start - 1 if start and text[start - 1] in "([" else start
-    if marker and not (text[marker - 1].isspace() or text[marker - 1] == ">"):
+    if (
+        marker
+        and start != explicit_start
+        and not (text[marker - 1].isspace() or text[marker - 1] == ">")
+    ):
         return None
     if end < len(text) and not (text[end].isspace() or text[end] in ")]" + _SEPARATORS):
         return None
@@ -24,8 +32,12 @@ def _marker_start(text: str, start: int, end: int) -> int | None:
 
 
 def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:  # noqa: C901 - One forward scan, including explicit lenient mode.
+    """Collect timestamp tokens and title offsets in one forward scan."""
     matches: list[tuple[int, int, str]] = []
-    index = 0
+    explicit_start = line_timestamp_start(text)
+    if mode == "strict" and explicit_start is None:
+        return matches
+    index = explicit_start if mode == "strict" and explicit_start is not None else 0
     while index < len(text):
         if not text[index].isdigit():
             index += 1
@@ -36,19 +48,19 @@ def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:
         ):
             index += 1
         token = text[start:index]
+        # A lone terminal punctuation mark is a delimiter, not another segment.
+        if (
+            token[-1:] in {":", "."}
+            and len(token) > 1
+            and token[-2].isdigit()
+            and (index == len(text) or text[index].isspace() or text[index] in ")]")
+        ):
+            token = token[:-1]
         if ":" not in token:
+            if mode == "strict":
+                break
             continue
-        marker_start = _marker_start(text, start, index)
-        if mode == "strict" and text[:start].strip() not in {
-            "",
-            ">",
-            "(",
-            "[",
-            ">(",
-            ">[",
-        }:
-            # Strict mode needs only the first numeric run on each line.
-            break
+        marker_start = _marker_start(text, start, index, explicit_start)
         if marker_start is None:
             if mode == "strict":
                 break
@@ -66,12 +78,13 @@ def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:
 
 
 def _title(line: DescriptionLine, start: int, end: int) -> str:
-    raw_start = line.offsets[start] if start < len(line.offsets) else len(line.raw)
+    """Recover a title fragment with its enclosing inline markup."""
+    raw_start = line.raw_start(start)
     # Include opening inline tags immediately before the first visible title
     # character, e.g. '0:00 <a href="...">Intro</a>'.
-    previous = line.ends[start - 1] if start else 0
+    previous = line.raw_end(start - 1) if start else 0
     raw_start = min(raw_start, previous)
-    raw_end = line.ends[end - 1] if end and end < len(line.offsets) else len(line.raw)
+    raw_end = line.raw_end(end - 1) if end and end < len(line.text) else len(line.raw)
     return inline_fragment(line.raw[raw_start:raw_end]).strip()
 
 
@@ -95,7 +108,8 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
     entry_index = 0
     for line in description_lines(description):
         matches = _timestamps(line.text, mode)
-        for index, (_, end, token) in enumerate(matches):
+        explicit_start = line_timestamp_start(line.text)
+        for index, (marker, end, token) in enumerate(matches):
             title_end = (
                 matches[index + 1][0] if index + 1 < len(matches) else len(line.text)
             )
@@ -109,9 +123,13 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
                 continue
             title = _title(line, end, title_end)
             url_match = _re_url.search(title)
-            enclosing_url = line.urls[end] if end < len(line.urls) else None
+            enclosing_url = line.url_at(end)
             url = unescape(url_match[0]) if url_match else enclosing_url
-            if not plain_text(title):
+            text_title = plain_text(title)
+            if not text_title:
+                numeric_start = marker + (line.text[marker : marker + 1] in {"(", "["})
+                if mode == "lenient" and numeric_start != explicit_start:
+                    continue
                 issues.append(
                     ChapterIssue(
                         entry_index,
@@ -122,7 +140,7 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
                 )
             else:
                 chapters.append(
-                    ChapterData(start, plain_text(title) if strip_html else title, url)
+                    ChapterData(start, text_title if strip_html else title, url)
                 )
             entry_index += 1
     if require_monotonic and any(

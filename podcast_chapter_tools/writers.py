@@ -15,6 +15,7 @@ type ChapterInput = Chapter | ChapterData | tuple[int, str, str | None, str | No
 
 
 def _data(chapter: ChapterInput) -> ChapterData:
+    """Return rich chapter data, converting legacy fields when needed."""
     if isinstance(chapter, ChapterData):
         return chapter
     legacy = Chapter(*chapter)
@@ -27,7 +28,9 @@ def chapters_to_pci_dict(chapters: Iterable[ChapterInput]) -> dict[str, Any]:
     for chapter in chapters:
         data = _data(chapter)
         format_timestamp(data.start)  # Reject nonfinite/negative hand-built data.
-        entry: dict[str, Any] = {"startTime": data.start}
+        entry: dict[str, Any] = {
+            "startTime": int(data.start) if data.start.is_integer() else data.start
+        }
         if data.title is not None:
             entry["title"] = data.title
         if data.url is not None:
@@ -39,7 +42,7 @@ def chapters_to_pci_dict(chapters: Iterable[ChapterInput]) -> dict[str, Any]:
             if data.end < data.start:
                 msg = "Chapter end precedes start"
                 raise ValueError(msg)
-            entry["endTime"] = data.end
+            entry["endTime"] = int(data.end) if data.end.is_integer() else data.end
         if not data.toc:
             entry["toc"] = False
         entries.append(entry)

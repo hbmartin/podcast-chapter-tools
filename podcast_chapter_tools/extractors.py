@@ -1,6 +1,5 @@
 """Legacy tuple extractors and lazy access to HTTP fetching."""
 
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -23,6 +22,7 @@ _ts_to_secs = ts_to_secs
 
 
 def _log_result(result: ChapterParseResult) -> None:
+    """Log recoverable chapter issues with their source and entry context."""
     for issue in result.issues:
         logger.warning(
             "Chapter issue source={} GUID={} entry={} field={} code={}: {}",
@@ -36,6 +36,7 @@ def _log_result(result: ChapterParseResult) -> None:
 
 
 def _log_failure(exc: ChapterParseError | ChapterFetchError) -> None:
+    """Log a typed failure and any recoverable parse diagnostics."""
     logger.warning("Chapter extraction failed: {}", exc)
     if isinstance(exc, ChapterParseError):
         _log_result(
@@ -134,15 +135,34 @@ def get_and_extract_pci_chapters(  # noqa: PLR0913 - Retain legacy positional ar
     return result.to_legacy(include_non_toc=include_non_toc)
 
 
-def _iter_feed_items(root: ElementTree.Element) -> Iterator[ElementTree.Element]:
-    channel = root.find("./channel")
-    if channel is not None:
-        yield from channel.findall("item")
+def _read_feed_index(feed_file: Path) -> FeedChapterIndex:
+    """Read feed bytes and build an index with file source context."""
+    return parse_feed_chapters(feed_file.read_bytes(), source=str(feed_file))
+
+
+def _fetch_feed_index(
+    feed_url: str,
+    headers: dict[str, str] | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> FeedChapterIndex:
+    """Fetch a feed, honoring an explicit HTTP charset before XML parsing."""
+    from .transport import get_response  # noqa: PLC0415 - Keep HTTP imports lazy.
+
+    response = get_response(feed_url, headers, timeout)
+    xml: str | bytes = response.content
+    if charset := response.charset_encoding:
+        try:
+            xml = response.content.decode(charset)
+        except (LookupError, UnicodeError) as exc:
+            msg = "Invalid feed encoding"
+            raise ChapterParseError(msg, source=feed_url) from exc
+    return parse_feed_chapters(xml, source=feed_url)
 
 
 def _file_index(feed_file: Path) -> FeedChapterIndex | None:
+    """Build a file index, translating expected failures to None."""
     try:
-        index = parse_feed_chapters(feed_file.read_bytes(), source=str(feed_file))
+        index = _read_feed_index(feed_file)
     except (OSError, ValueError) as exc:
         logger.warning("Failed to read/parse feed {}: {}", feed_file, exc)
         return None
@@ -153,6 +173,7 @@ def _file_index(feed_file: Path) -> FeedChapterIndex | None:
 def _legacy_psc(
     index: FeedChapterIndex, guid: str, *, strict: bool
 ) -> list[Chapter] | None:
+    """Look up legacy PSC chapters, translating parse failures to None."""
     if not index.has_psc(guid):
         return None
     try:
@@ -181,11 +202,8 @@ def extract_psc_chapters_from_url(
     strict: bool = False,
 ) -> list[Chapter] | None:
     """Fetch a feed once and look up legacy PSC chapters for one GUID."""
-    from .transport import get_response  # noqa: PLC0415
-
     try:
-        response = get_response(feed_url, headers, timeout)
-        index = parse_feed_chapters(response.content, source=feed_url)
+        index = _fetch_feed_index(feed_url, headers, timeout)
     except (ChapterFetchError, ChapterParseError) as exc:
         _log_failure(exc)
         return None

@@ -1,10 +1,13 @@
 """Bounded HTML preparation and line boundaries for untrusted show notes."""
 
 import re
+from bisect import bisect_right
 from collections.abc import Iterator
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+
+from .recognition import begins_chapter_line
 
 _BLOCKS = frozenset(
     {
@@ -73,9 +76,14 @@ _VOID = frozenset(
 _ENTITY = re.compile(
     r"&(?:#[0-9]{1,10};?|#[xX][0-9a-fA-F]{1,8};?|[A-Za-z][A-Za-z0-9]{0,31};?)"
 )
+_RAW_START = re.compile(r"<(script|style)(?=[\s/>])", re.IGNORECASE)
+_RAW_END = {
+    tag: re.compile(rf"</{tag}\s*>", re.IGNORECASE) for tag in ("script", "style")
+}
 
 
 def _tag_end(text: str, cursor: int) -> tuple[int, bool]:
+    """Scan to a tag end or recovery boundary while tracking quoted text."""
     quote = ""
     nested = False
     while cursor < len(text):
@@ -89,8 +97,18 @@ def _tag_end(text: str, cursor: int) -> tuple[int, bool]:
             break
         elif char == "<":
             nested = True
+        elif char in "\r\n" and begins_chapter_line(text, cursor + 1):
+            return cursor, True
         cursor += 1
     return cursor, nested
+
+
+def _raw_parts(text: str, index: int, tag: str) -> tuple[list[tuple[bool, str]], int]:
+    """Split raw script/style contents from the matching closing tag."""
+    closing = _RAW_END[tag].search(text, index)
+    if closing is None:
+        return [(False, text[index:])], len(text)
+    return [(False, text[index : closing.start()]), (True, closing[0])], closing.end()
 
 
 def _markup_parts(text: str) -> Iterator[tuple[bool, str]]:
@@ -121,68 +139,131 @@ def _markup_parts(text: str) -> Iterator[tuple[bool, str]]:
         if cursor == len(text):
             yield False, text[start:]
             break
-        yield not nested, text[start : cursor + 1]
+        if text[cursor] in "\r\n":
+            yield False, text[start:cursor]
+            index = cursor
+            continue
+        part = text[start : cursor + 1]
+        yield not nested, part
         index = cursor + 1
+        raw_start = _RAW_START.match(part) if not nested else None
+        if raw_start and not part.rstrip().endswith("/>"):
+            parts, index = _raw_parts(text, index, raw_start[1].lower())
+            yield from parts
 
 
-@dataclass(frozen=True)
-class DescriptionLine:
+# Compact source spans retain positional construction during scanning.
+@dataclass(frozen=True, slots=True)
+class _Span:  # garuff: ignore[GAC009]
+    start: int
+    end: int
+    raw_start: int
+    raw_end: int
+    url: str | None
+    literal: bool
+
+
+# Line snapshots retain positional construction during scanning.
+@dataclass(frozen=True, slots=True)
+class DescriptionLine:  # garuff: ignore[GAC009]
     """Visible text with exact offsets into its original inline markup."""
 
     text: str
     raw: str
-    offsets: tuple[int, ...]
-    ends: tuple[int, ...]
-    urls: tuple[str | None, ...]
+    # Source mappings stay immutable once a visible line is flushed.
+    spans: tuple[_Span, ...]  # garuff: ignore[GAC005]
+
+    def _span(self, index: int) -> _Span:
+        """Find the source span enclosing a visible character offset."""
+        return self.spans[
+            bisect_right(self.spans, index, key=lambda span: span.start) - 1
+        ]
+
+    def raw_start(self, index: int) -> int:
+        """Find a visible character's raw start, including whole entities."""
+        if index >= len(self.text):
+            return len(self.raw)
+        span = self._span(index)
+        return span.raw_start + index - span.start if span.literal else span.raw_start
+
+    def raw_end(self, index: int) -> int:
+        """Find a visible character's raw end, including whole entities."""
+        span = self._span(index)
+        return span.raw_start + index - span.start + 1 if span.literal else span.raw_end
+
+    def url_at(self, index: int) -> str | None:
+        """Resolve enclosing link context without per-character references."""
+        return self._span(index).url if index < len(self.text) else None
 
 
 class _Lines(HTMLParser):
     def __init__(self) -> None:
+        """Initialize visible line buffers, compact spans, and link context."""
         super().__init__(convert_charrefs=False)
         self.lines: list[DescriptionLine] = []
         self._raw: list[str] = []
         self._text: list[str] = []
-        self._offsets: list[int] = []
-        self._ends: list[int] = []
-        self._urls: list[str | None] = []
+        self._spans: list[_Span] = []
         self._anchors: list[str | None] = []
         self._length = 0
+        self._visible_length = 0
         self._hidden: str | None = None
 
     def boundary(self) -> None:
-        if self._offsets:
+        """Flush the current visible line and reset its source buffers."""
+        if self._spans:
             self.lines.append(
                 DescriptionLine(
                     "".join(self._text),
                     "".join(self._raw),
-                    tuple(self._offsets),
-                    tuple(self._ends),
-                    tuple(self._urls),
+                    tuple(self._spans),
                 )
             )
         self._raw = []
         self._text = []
-        self._offsets = []
-        self._ends = []
-        self._urls = []
+        self._spans = []
         self._length = 0
+        self._visible_length = 0
 
     def _append(self, raw: str, visible: str) -> None:
+        """Append raw and visible text, merging adjacent literal spans."""
         if visible in {"\r", "\n", "\r\n"}:
             self.boundary()
             return
         self._raw.append(raw)
         self._text.append(visible)
-        if raw == visible:
-            self._offsets.extend(range(self._length, self._length + len(raw)))
-            self._ends.extend(range(self._length + 1, self._length + len(raw) + 1))
-        else:
-            self._offsets.extend([self._length] * len(visible))
-            self._ends.extend([self._length + len(raw)] * len(visible))
-        self._urls.extend([self._anchors[-1] if self._anchors else None] * len(visible))
+        if visible:
+            span = _Span(
+                self._visible_length,
+                self._visible_length + len(visible),
+                self._length,
+                self._length + len(raw),
+                self._anchors[-1] if self._anchors else None,
+                raw == visible,
+            )
+            previous = self._spans[-1] if self._spans else None
+            if (
+                previous is not None
+                and previous.literal
+                and span.literal
+                and previous.raw_end == span.raw_start
+                and previous.url == span.url
+            ):
+                self._spans[-1] = _Span(
+                    previous.start,
+                    span.end,
+                    previous.raw_start,
+                    span.raw_end,
+                    span.url,
+                    literal=True,
+                )
+            else:
+                self._spans.append(span)
         self._length += len(raw)
+        self._visible_length += len(visible)
 
     def handle_data(self, data: str) -> None:
+        """Split visible data into lines and decode entities with source spans."""
         if self._hidden:
             return
         for index, line in enumerate(data.splitlines(keepends=True)):
@@ -199,6 +280,7 @@ class _Lines(HTMLParser):
                 self.boundary()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Track block boundaries, suppressed content, and inline links."""
         if self._hidden:
             return
         if tag in {"script", "style"}:
@@ -216,6 +298,7 @@ class _Lines(HTMLParser):
                 )
 
     def handle_endtag(self, tag: str) -> None:
+        """Close suppressed content or update visible markup and link context."""
         if self._hidden:
             if self._hidden == tag:
                 self._hidden = None
@@ -247,21 +330,25 @@ def description_lines(text: str) -> list[DescriptionLine]:
 
 class _Inline(HTMLParser):
     def __init__(self) -> None:
+        """Initialize preserved fragments and the stack of open inline tags."""
         super().__init__(convert_charrefs=False)
         self.parts: list[str] = []
         self.stack: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 - HTMLParser callback.
+        """Preserve an opening tag and track its matching closing tag."""
         self.parts.append(self.get_starttag_text() or "")
         if tag not in _VOID:
             self.stack.append(tag)
 
     def handle_endtag(self, tag: str) -> None:
+        """Preserve a closing tag only when it matches the open stack."""
         if self.stack and self.stack[-1] == tag:
             self.parts.append(f"</{tag}>")
             self.stack.pop()
 
     def handle_data(self, data: str) -> None:
+        """Preserve literal fragment text without further decoding."""
         self.parts.append(data)
 
 

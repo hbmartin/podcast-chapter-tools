@@ -12,6 +12,7 @@ from ai.ai import (
 
 
 def create_chapters(transcript: str) -> dict[str, tuple[str | None, Exception | None]]:
+    """Generate chapter suggestions for a transcript across configured models."""
     # TODO: #21 estimate token count and split into multiple prompts if needed
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
     return complete(

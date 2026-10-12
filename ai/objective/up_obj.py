@@ -10,6 +10,7 @@ from podcast_transcript_convert.file_utils import list_files
 
 
 def _read_json_and_map_id(file_path: str) -> Generator[Object]:
+    """Yield Objective objects for transcript segments with stable IDs."""
     data = json.loads(Path(file_path).read_text(encoding="utf-8"))
     guid = data["metadata"]["guid"]
     title = data["metadata"]["title"]
@@ -34,6 +35,7 @@ def _read_json_and_map_id(file_path: str) -> Generator[Object]:
 
 
 def upload_from_source_directory(source_path: str, objective_api_key: str) -> None:
+    """Upload transcript JSON files to the Objective object store."""
     client = Client(api_key=objective_api_key)
     files = [f for f in list_files(source_path, []) if f.endswith(".json")]
     for file in files:

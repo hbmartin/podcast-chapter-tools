@@ -6,6 +6,7 @@ from objective import Client
 
 
 def objective_search(objective_api_key: str, index_id: str, query: str) -> None:
+    """Search an Objective index and log matching transcript bodies."""
     client = Client(api_key=objective_api_key)
     index = client.get_index(index_id)
     results = index.search(query=query, object_fields="body")

@@ -14,12 +14,14 @@ def complete(
     temperature: float = 0.6,
     calls: Iterable[AiCall] | None = None,
 ) -> dict[str, tuple[str | None, Exception | None]]:
+    """Run provider calls concurrently and collect text or errors by model."""
     if calls is None:
         calls = ai_calls
     if keys is None:
         keys = get_env_keys({provider for provider, _, _ in calls})
 
     def _execute_ai_call(ai_call: AiCall) -> tuple[str, str | None, Exception | None]:
+        """Execute one provider call and retain its result or exception."""
         provider, model_name, model_call = ai_call
         logger.info(f"Calling {provider}: {model_name} on thread #{get_ident()}")
         prompt = prompts.get(provider) or prompts.get(DEFAULT)
