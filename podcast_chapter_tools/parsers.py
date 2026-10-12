@@ -19,6 +19,7 @@ from .timecodes import parse_timestamp
 
 
 def _number(value: object, field: str, index: int, issues: list[ChapterIssue]) -> float:
+    """Validate a nonnegative finite number and diagnose string coercion."""
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         msg = "Expected a finite nonnegative number"
         raise TypeError(msg)
@@ -36,6 +37,7 @@ def _number(value: object, field: str, index: int, issues: list[ChapterIssue]) -
 def _optional_string(
     entry: Mapping[str, Any], field: str, index: int, issues: list[ChapterIssue]
 ) -> str | None:
+    """Read an optional string, diagnosing invalid values before omission."""
     if field not in entry:
         return None
     value = entry[field]
@@ -56,6 +58,7 @@ def _finish(  # noqa: PLR0913 - Shared result/context validation.
     source: str | None,
     guid: str | None,
 ) -> ChapterParseResult:
+    """Freeze parsed entries and validate the result with source context."""
     return _validate_result(
         ChapterParseResult(tuple(chapters), tuple(issues), source, guid),
         strict=strict,
@@ -193,14 +196,17 @@ def parse_psc_chapters(
     )
 
 
+# Cached failure snapshots retain their existing positional construction.
 @dataclass(frozen=True, slots=True)
-class _ParseFailure:
+class _ParseFailure:  # garuff: ignore[GAC009]
     message: str
-    issues: tuple[ChapterIssue, ...]
+    # Failure diagnostics are immutable so cached details can be shared.
+    issues: tuple[ChapterIssue, ...]  # garuff: ignore[GAC005]
     source: str | None
     guid: str | None
 
     def exception(self) -> ChapterParseError:
+        """Reconstruct a fresh parse exception from cached failure details."""
         return ChapterParseError(
             self.message, issues=self.issues, source=self.source, guid=self.guid
         )
@@ -214,15 +220,17 @@ class FeedChapterIndex:
         items: dict[str, ElementTree.Element],
         *,
         source: str | None,
-        issues: tuple[ChapterIssue, ...],
+        # Feed diagnostics retain their immutable public representation.
+        issues: tuple[ChapterIssue, ...],  # garuff: ignore[GAC005]
     ) -> None:
+        """Retain indexed episodes and initialize the per-GUID PSC cache."""
         self._items = items
         self._psc: dict[str, ChapterParseResult | _ParseFailure] = {}
         self.source = source
         self.issues = issues
 
     @property
-    def guids(self) -> tuple[str, ...]:
+    def guids(self) -> tuple[str, ...]:  # garuff: ignore[GAC005]
         """Episode GUIDs in feed order, with duplicates omitted."""
         return tuple(self._items)
 

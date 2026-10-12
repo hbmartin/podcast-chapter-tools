@@ -54,6 +54,7 @@ def extract_id3_chapters(audio_file: Path) -> list[Chapter] | None:
 
 
 def _ctoc_order(tags: Any, chap_frames: dict[str, Any]) -> list[str]:  # noqa: ANN401
+    """Use CTOC child order, appending unlisted chapters by start time."""
     sorted_ids = sorted(chap_frames, key=lambda cid: chap_frames[cid].start_time)
     for ctoc in tags.getall("CTOC"):
         child_ids = [cid for cid in ctoc.child_element_ids if cid in chap_frames]
@@ -64,6 +65,7 @@ def _ctoc_order(tags: Any, chap_frames: dict[str, Any]) -> list[str]:  # noqa: A
 
 
 def _chap_to_chapter(chap: Any) -> Chapter:  # noqa: ANN401
+    """Convert an ID3 CHAP frame to a chapter with seconds and metadata."""
     title = None
     url = None
     for sub_frame in chap.sub_frames.values():

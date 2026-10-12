@@ -18,6 +18,7 @@ _SEPARATORS = "-\u2013\u2014"
 def _marker_start(
     text: str, start: int, end: int, explicit_start: int | None
 ) -> int | None:
+    """Return the wrapper start when a timestamp has valid boundaries."""
     marker = start - 1 if start and text[start - 1] in "([" else start
     if (
         marker
@@ -31,6 +32,7 @@ def _marker_start(
 
 
 def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:  # noqa: C901 - One forward scan, including explicit lenient mode.
+    """Collect timestamp tokens and title offsets in one forward scan."""
     matches: list[tuple[int, int, str]] = []
     explicit_start = line_timestamp_start(text)
     if mode == "strict" and explicit_start is None:
@@ -76,6 +78,7 @@ def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:
 
 
 def _title(line: DescriptionLine, start: int, end: int) -> str:
+    """Recover a title fragment with its enclosing inline markup."""
     raw_start = line.raw_start(start)
     # Include opening inline tags immediately before the first visible title
     # character, e.g. '0:00 <a href="...">Intro</a>'.

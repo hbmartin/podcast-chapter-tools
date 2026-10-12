@@ -2,6 +2,7 @@ DEFAULT = "default"
 
 
 def prompt_transcript_to_chapters(transcript: str) -> dict[str, str]:
+    """Build the default chapter-generation prompt from a transcript."""
     default = (
         "I'm going to give you a podcast transcript with timestamps in this format: "
         "`(00:03:05) Some transcription`. with the timestamp in parentheses in HH:MM:SS format. "

@@ -46,12 +46,14 @@ def get_response(
 
 
 def _metadata_path(path: Path) -> Path:
+    """Return the verification sidecar path for an archive."""
     return path.with_name(path.name + ".meta.json")
 
 
 def _read_archive(
     path: Path, url: str, *, trust_legacy_archive: bool
 ) -> dict[str, Any] | None:
+    """Read an archive only when its metadata or legacy policy permits it."""
     try:
         raw = path.read_bytes()
         metadata_path = _metadata_path(path)
@@ -75,6 +77,7 @@ def _read_archive(
 
 
 def _atomic_write(path: Path, raw: bytes) -> None:
+    """Atomically replace file bytes while preserving existing permissions."""
     temporary = None
     try:
         try:
@@ -97,6 +100,7 @@ def _atomic_write(path: Path, raw: bytes) -> None:
 
 
 def _write_archive(path: Path, url: str, document: dict[str, Any]) -> None:
+    """Write the JSON archive and its URL and digest verification sidecar."""
     raw = json.dumps(document, ensure_ascii=False).encode("utf-8")
     metadata = json.dumps(
         {"version": 1, "url": url, "sha256": hashlib.sha256(raw).hexdigest()}

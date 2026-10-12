@@ -4,6 +4,7 @@ from objective import Client
 
 
 def create_transcript_index(objective_api_key: str) -> None:
+    """Create a searchable transcript index and watch its status."""
     client = Client(api_key=objective_api_key)
     index = client.indexes.create_index(
         index_type="text",

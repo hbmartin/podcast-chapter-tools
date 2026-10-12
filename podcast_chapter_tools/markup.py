@@ -83,6 +83,7 @@ _RAW_END = {
 
 
 def _tag_end(text: str, cursor: int) -> tuple[int, bool]:
+    """Scan to a tag end or recovery boundary while tracking quoted text."""
     quote = ""
     nested = False
     while cursor < len(text):
@@ -103,6 +104,7 @@ def _tag_end(text: str, cursor: int) -> tuple[int, bool]:
 
 
 def _raw_parts(text: str, index: int, tag: str) -> tuple[list[tuple[bool, str]], int]:
+    """Split raw script/style contents from the matching closing tag."""
     closing = _RAW_END[tag].search(text, index)
     if closing is None:
         return [(False, text[index:])], len(text)
@@ -150,8 +152,9 @@ def _markup_parts(text: str) -> Iterator[tuple[bool, str]]:
             yield from parts
 
 
+# Compact source spans retain positional construction during scanning.
 @dataclass(frozen=True, slots=True)
-class _Span:
+class _Span:  # garuff: ignore[GAC009]
     start: int
     end: int
     raw_start: int
@@ -160,15 +163,18 @@ class _Span:
     literal: bool
 
 
+# Line snapshots retain positional construction during scanning.
 @dataclass(frozen=True, slots=True)
-class DescriptionLine:
+class DescriptionLine:  # garuff: ignore[GAC009]
     """Visible text with exact offsets into its original inline markup."""
 
     text: str
     raw: str
-    spans: tuple[_Span, ...]
+    # Source mappings stay immutable once a visible line is flushed.
+    spans: tuple[_Span, ...]  # garuff: ignore[GAC005]
 
     def _span(self, index: int) -> _Span:
+        """Find the source span enclosing a visible character offset."""
         return self.spans[
             bisect_right(self.spans, index, key=lambda span: span.start) - 1
         ]
@@ -192,6 +198,7 @@ class DescriptionLine:
 
 class _Lines(HTMLParser):
     def __init__(self) -> None:
+        """Initialize visible line buffers, compact spans, and link context."""
         super().__init__(convert_charrefs=False)
         self.lines: list[DescriptionLine] = []
         self._raw: list[str] = []
@@ -203,6 +210,7 @@ class _Lines(HTMLParser):
         self._hidden: str | None = None
 
     def boundary(self) -> None:
+        """Flush the current visible line and reset its source buffers."""
         if self._spans:
             self.lines.append(
                 DescriptionLine(
@@ -218,6 +226,7 @@ class _Lines(HTMLParser):
         self._visible_length = 0
 
     def _append(self, raw: str, visible: str) -> None:
+        """Append raw and visible text, merging adjacent literal spans."""
         if visible in {"\r", "\n", "\r\n"}:
             self.boundary()
             return
@@ -254,6 +263,7 @@ class _Lines(HTMLParser):
         self._visible_length += len(visible)
 
     def handle_data(self, data: str) -> None:
+        """Split visible data into lines and decode entities with source spans."""
         if self._hidden:
             return
         for index, line in enumerate(data.splitlines(keepends=True)):
@@ -270,6 +280,7 @@ class _Lines(HTMLParser):
                 self.boundary()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Track block boundaries, suppressed content, and inline links."""
         if self._hidden:
             return
         if tag in {"script", "style"}:
@@ -287,6 +298,7 @@ class _Lines(HTMLParser):
                 )
 
     def handle_endtag(self, tag: str) -> None:
+        """Close suppressed content or update visible markup and link context."""
         if self._hidden:
             if self._hidden == tag:
                 self._hidden = None
@@ -318,21 +330,25 @@ def description_lines(text: str) -> list[DescriptionLine]:
 
 class _Inline(HTMLParser):
     def __init__(self) -> None:
+        """Initialize preserved fragments and the stack of open inline tags."""
         super().__init__(convert_charrefs=False)
         self.parts: list[str] = []
         self.stack: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 - HTMLParser callback.
+        """Preserve an opening tag and track its matching closing tag."""
         self.parts.append(self.get_starttag_text() or "")
         if tag not in _VOID:
             self.stack.append(tag)
 
     def handle_endtag(self, tag: str) -> None:
+        """Preserve a closing tag only when it matches the open stack."""
         if self.stack and self.stack[-1] == tag:
             self.parts.append(f"</{tag}>")
             self.stack.pop()
 
     def handle_data(self, data: str) -> None:
+        """Preserve literal fragment text without further decoding."""
         self.parts.append(data)
 
 

@@ -253,9 +253,9 @@ separating absent chapters from failures in its error messages.
 ```bash
 git clone git@github.com:hbmartin/podcast-chapter-tools.git
 cd podcast-chapter-tools
-uv sync
+uv sync --locked --python 3.13
 
-uv run pytest
+uv run --locked --python 3.13 pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run pyrefly check
@@ -270,32 +270,37 @@ runs on Python 3.13 and 3.14 with `continue-on-error: true`. A score below
 advisory findings are shown without affecting the score. Review the findings
 and checker behavior before upgrading it or making the job blocking.
 
-[Garuff](https://github.com/gahjelle/garuff) is also being evaluated in a separate,
-non-blocking CI job. It requires Python 3.14 or newer, so it lives in an opt-in
-dependency group rather than the default development environment:
+[Garuff](https://github.com/gahjelle/garuff) runs in a separate, enforced CI job.
+It requires Python 3.14 or newer and lives in an opt-in dependency group.
+Use isolated runs locally to preserve the project's interpreter and development
+packages:
 
 ```bash
-uv run --locked --only-group garuff --python 3.14 garuff check .
-uv run --locked --only-group garuff --python 3.14 garuff rule --all
+uv run --isolated --locked --only-group garuff --python 3.14 garuff check .
+uv run --isolated --locked --only-group garuff --python 3.14 garuff rule --all
 ```
 
 The checker is pinned to commit `7d126c00f13b4d94f39f1107934089241ab7a6a1`
-in `pyproject.toml` and `uv.lock` because upstream has no packaged release yet.
-CI keeps the full findings, explanations, and errors in the job logs and summary.
-All default rules remain enabled across the library, tests, and experimental
-scripts; no automatic fixes are applied. A nonzero checker exit fails its step
-but is tolerated by the experimental job, including installation or checker errors.
+in `pyproject.toml` and `uv.lock`. Findings and installation, configuration, or
+execution failures fail the Garuff job. Open the Garuff job summary in a
+[Lint and Test workflow run](https://github.com/hbmartin/podcast-chapter-tools/actions/workflows/lint.yml)
+for the current findings, explanations, and errors; full output is also kept in
+the job logs.
 
-The initial evaluation found 195 style violations: 146 missing function docstrings
-(`GAC010`), 37 functions with multiple positional parameters (`GAC008`), and 12
-docstrings using double backticks (`GAC004`). Of those findings, 140 are in tests,
-34 in the library, and 21 in experimental scripts. These preferences need review
-before enforcement: tests already omit docstrings by convention, double backticks
-are valid reStructuredText, and adding keyword-only parameters to public functions
-would break existing positional callers. Review findings and Python 3.13
-compatibility before applying fixes, updating the pin, or making this job blocking.
-Repeated Python 3.14 runs produced identical reports without crashes; rule
-explanations and the missing-path error diagnostic also worked as expected.
+Configuration follows project conventions: test function docstrings are optional
+(`GAC010`), valid reStructuredText double backticks are allowed (`GAC004`), and
+functions may accept up to four positional parameters (`GAC008`). Narrow inline
+exemptions preserve existing immutable tuple annotations (`GAC005`) and positional
+dataclass construction (`GAC009`); those rules remain enabled for other code.
+CI checks the library, tests, and experimental scripts without automatic fixes.
+
+On Python 3.13, exclude the Python 3.14-only group when syncing all groups:
+
+```bash
+uv sync --locked --all-groups --no-group garuff --python 3.13
+```
+
+Without that exclusion, `--all-groups` requires Python 3.14 or newer.
 
 The `ai/` directory contains experimental scripts for generating chapters
 from transcripts with LLMs; its dependencies live in `ai/requirements.txt`

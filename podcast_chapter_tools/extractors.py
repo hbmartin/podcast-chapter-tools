@@ -22,6 +22,7 @@ _ts_to_secs = ts_to_secs
 
 
 def _log_result(result: ChapterParseResult) -> None:
+    """Log recoverable chapter issues with their source and entry context."""
     for issue in result.issues:
         logger.warning(
             "Chapter issue source={} GUID={} entry={} field={} code={}: {}",
@@ -35,6 +36,7 @@ def _log_result(result: ChapterParseResult) -> None:
 
 
 def _log_failure(exc: ChapterParseError | ChapterFetchError) -> None:
+    """Log a typed failure and any recoverable parse diagnostics."""
     logger.warning("Chapter extraction failed: {}", exc)
     if isinstance(exc, ChapterParseError):
         _log_result(
@@ -134,6 +136,7 @@ def get_and_extract_pci_chapters(  # noqa: PLR0913 - Retain legacy positional ar
 
 
 def _read_feed_index(feed_file: Path) -> FeedChapterIndex:
+    """Read feed bytes and build an index with file source context."""
     return parse_feed_chapters(feed_file.read_bytes(), source=str(feed_file))
 
 
@@ -142,6 +145,7 @@ def _fetch_feed_index(
     headers: dict[str, str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> FeedChapterIndex:
+    """Fetch a feed, honoring an explicit HTTP charset before XML parsing."""
     from .transport import get_response  # noqa: PLC0415 - Keep HTTP imports lazy.
 
     response = get_response(feed_url, headers, timeout)
@@ -156,6 +160,7 @@ def _fetch_feed_index(
 
 
 def _file_index(feed_file: Path) -> FeedChapterIndex | None:
+    """Build a file index, translating expected failures to None."""
     try:
         index = _read_feed_index(feed_file)
     except (OSError, ValueError) as exc:
@@ -168,6 +173,7 @@ def _file_index(feed_file: Path) -> FeedChapterIndex | None:
 def _legacy_psc(
     index: FeedChapterIndex, guid: str, *, strict: bool
 ) -> list[Chapter] | None:
+    """Look up legacy PSC chapters, translating parse failures to None."""
     if not index.has_psc(guid):
         return None
     try:

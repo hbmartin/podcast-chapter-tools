@@ -2,10 +2,6 @@
 requires = ["uv_build>=0.12.24,<0.13"]
 build-backend = "uv_build"
 
-[tool.uv.build-backend]
-module-name = "podcast_chapter_tools"
-module-root = ""
-
 [project]
 name = "podcast-chapter-tools"
 version = "1.0.0"
@@ -50,19 +46,35 @@ dev = [
 # Opt in separately: Garuff requires Python 3.14, while the library supports 3.13.
 garuff = ["garuff"]
 
-[tool.uv.dependency-groups]
-garuff = { requires-python = ">=3.14" }
-
-[tool.uv.sources]
-# No packaged release yet; keep evaluations reproducible with an exact revision.
-garuff = { git = "https://github.com/gahjelle/garuff.git", rev = "7d126c00f13b4d94f39f1107934089241ab7a6a1" }
-
 [project.scripts]
 podcast-chapters = "podcast_chapter_tools.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/hbmartin/podcast-chapter-tools"
 Changelog = "https://github.com/hbmartin/podcast-chapter-tools/blob/main/CHANGELOG.md"
+
+[tool.uv.build-backend]
+module-name = "podcast_chapter_tools"
+module-root = ""
+
+[tool.uv.dependency-groups]
+garuff = { requires-python = ">=3.14" }
+
+[tool.uv.sources]
+# Keep checker runs reproducible with an exact revision.
+garuff = { git = "https://github.com/gahjelle/garuff.git", rev = "7d126c00f13b4d94f39f1107934089241ab7a6a1" }
+
+[tool.garuff]
+# Double backticks are valid reStructuredText inline literals.
+ignore = ["GAC004"]
+
+[tool.garuff.per-file-ignores]
+# Tests follow Ruff's existing convention of omitting function docstrings.
+"tests/**" = ["GAC010"]
+
+[tool.garuff.rules.GAC008]
+# Existing public functions accept up to four positional arguments.
+max_positional_args = 4
 
 
 [tool.ruff]

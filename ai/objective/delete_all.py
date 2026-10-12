@@ -4,6 +4,7 @@ from objective import Client
 
 
 def obj_delete_all(objective_api_key: str) -> None:
+    """Delete all objects in the Objective store and print the results."""
     client = Client(api_key=objective_api_key)
     all_objects = client.object_store.list_all_objects()
     results = client.object_store.delete_objects(all_objects)

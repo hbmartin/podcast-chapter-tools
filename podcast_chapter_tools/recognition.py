@@ -4,6 +4,7 @@ _FORMAT_MARKS = "\ufeff\u200b"
 
 
 def _padding_end(text: str, index: int, *, leading: bool = False) -> int:
+    """Skip line-local padding and optionally leading format marks."""
     while index < len(text) and text[index] not in "\r\n":
         if not (text[index].isspace() or (leading and text[index] in _FORMAT_MARKS)):
             break

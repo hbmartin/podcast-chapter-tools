@@ -15,6 +15,7 @@ type ChapterInput = Chapter | ChapterData | tuple[int, str, str | None, str | No
 
 
 def _data(chapter: ChapterInput) -> ChapterData:
+    """Return rich chapter data, converting legacy fields when needed."""
     if isinstance(chapter, ChapterData):
         return chapter
     legacy = Chapter(*chapter)
