@@ -15,15 +15,12 @@ from pathlib import Path
 
 from loguru import logger
 
-from .entities import Chapter
-from .extractors import (
-    extract_description_chapters,
-    extract_pci_chapters,
-    extract_psc_chapters_from_file,
-    extract_psc_chapters_from_url,
-    get_and_extract_pci_chapters,
-)
-from .normalize import normalize_chapters
+from .description import parse_description_chapters
+from .entities import ChapterData, ChapterParseResult
+from .errors import ChapterFetchError, ChapterParseError
+from .extractors import _log_result, fetch_pci_chapters
+from .normalize import normalize_chapter_data
+from .parsers import parse_feed_chapters, parse_pci_chapters
 from .writers import (
     chapters_to_description,
     chapters_to_pci_json,
@@ -53,6 +50,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     desc.add_argument("file", type=Path)
     desc.add_argument("--strip-html", action="store_true")
+    desc.add_argument(
+        "--description-mode", choices=("strict", "lenient"), default="strict"
+    )
     add_common(desc)
 
     psc = subparsers.add_parser(
@@ -80,32 +80,45 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _extract(args: argparse.Namespace) -> None | list[Chapter]:  # noqa: PLR0911
+def _extract(args: argparse.Namespace) -> ChapterParseResult | None:
     if args.command == "from-description":
-        return extract_description_chapters(
+        return parse_description_chapters(
             args.file.read_text(encoding="utf-8"),
             strip_html=args.strip_html,
+            mode=args.description_mode,
+            source=str(args.file),
         )
     if args.command == "from-psc":
         if args.feed.startswith(("http://", "https://")):
-            return extract_psc_chapters_from_url(args.feed, args.guid)
-        return extract_psc_chapters_from_file(Path(args.feed), args.guid)
+            from .transport import get_response  # noqa: PLC0415
+
+            xml = get_response(args.feed).content
+        else:
+            xml = Path(args.feed).read_bytes()
+        index = parse_feed_chapters(xml, source=args.feed)
+        _log_result(ChapterParseResult(issues=index.issues, source=index.source))
+        return index.psc_for_guid(args.guid)
     if args.command == "from-pci":
         if args.source.startswith(("http://", "https://")):
-            return get_and_extract_pci_chapters(args.source)
-        return extract_pci_chapters(
+            return fetch_pci_chapters(args.source)
+        return parse_pci_chapters(
             json.loads(Path(args.source).read_text(encoding="utf-8")),
+            source=args.source,
         )
     if args.command == "from-id3":
         # Imported lazily so the optional mutagen dependency is only
         # required for the from-id3 command.
         from .id3 import extract_id3_chapters  # noqa: PLC0415
 
-        return extract_id3_chapters(args.file)
+        chapters = extract_id3_chapters(args.file) or []
+        return ChapterParseResult(
+            tuple(ChapterData(c.start, c.title, c.url, c.image) for c in chapters),
+            source=str(args.file),
+        )
     return None
 
 
-def _emit(chapters: list[Chapter], fmt: str, indent: int) -> str:
+def _emit(chapters: list[ChapterData], fmt: str, indent: int) -> str:
     if fmt == "pci":
         return chapters_to_pci_json(chapters, indent=indent)
     if fmt == "psc":
@@ -115,6 +128,7 @@ def _emit(chapters: list[Chapter], fmt: str, indent: int) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    logger.enable("podcast_chapter_tools")
     logger.remove()
     logger.add(
         sys.stderr,
@@ -123,21 +137,28 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        chapters = _extract(args)
-        if not chapters:
+        result = _extract(args)
+        if result is not None:
+            _log_result(result)
+        if result is None or not result.chapters:
             print("No chapters found.", file=sys.stderr)
             return 1
 
+        chapters = list(result.chapters)
         if args.normalize:
-            chapters = normalize_chapters(chapters, strip_titles=True)
+            chapters = normalize_chapter_data(chapters, strip_titles=True)
 
         rendered = _emit(chapters, args.to, args.indent)
         if args.output is not None:
             args.output.write_text(rendered + "\n", encoding="utf-8")
         else:
             print(rendered)
-    except (OSError, ValueError, ImportError) as exc:
-        logger.error("{}", exc)
+    except (OSError, ValueError, ImportError, ChapterFetchError) as exc:
+        if isinstance(exc, ChapterParseError):
+            _log_result(
+                ChapterParseResult(issues=exc.issues, source=exc.source, guid=exc.guid)
+            )
+        logger.error("{}: {}", type(exc).__name__, exc)
         return 1
     return 0
 

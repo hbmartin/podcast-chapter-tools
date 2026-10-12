@@ -1,73 +1,90 @@
-"""Serialize chapters to PCI JSON, PSC XML, and description-embed text."""
+"""Serialize legacy or rich chapters to PCI, PSC, and description text."""
 
 import json
 from collections.abc import Iterable
 from typing import Any
 from xml.etree import ElementTree
 
-from .entities import Chapter
-from .timecodes import secs_to_ts
+from .entities import Chapter, ChapterData
+from .timecodes import format_timestamp
 
 PCI_VERSION = "1.2.0"
 PSC_VERSION = "1.2"
 PSC_NAMESPACE = "http://podlove.org/simple-chapters"
+type ChapterInput = Chapter | ChapterData | tuple[int, str, str | None, str | None]
 
 
-def chapters_to_pci_dict(chapters: Iterable[Chapter]) -> dict[str, Any]:
-    """Build a PodcastIndex chapters document as a dict."""
-    pci_chapters = []
+def _data(chapter: ChapterInput) -> ChapterData:
+    if isinstance(chapter, ChapterData):
+        return chapter
+    legacy = Chapter(*chapter)
+    return ChapterData(legacy.start, legacy.title, legacy.url, legacy.image)
+
+
+def chapters_to_pci_dict(chapters: Iterable[ChapterInput]) -> dict[str, Any]:
+    """Build PCI JSON, retaining fractions, untitled markers, toc, and endTime."""
+    entries = []
     for chapter in chapters:
-        chapter_ = Chapter(*chapter)
-        entry: dict[str, Any] = {"startTime": chapter_.start, "title": chapter_.title}
-        if chapter_.url is not None:
-            entry["url"] = chapter_.url
-        if chapter_.image is not None:
-            entry["img"] = chapter_.image
-        pci_chapters.append(entry)
-    return {"version": PCI_VERSION, "chapters": pci_chapters}
+        data = _data(chapter)
+        format_timestamp(data.start)  # Reject nonfinite/negative hand-built data.
+        entry: dict[str, Any] = {"startTime": data.start}
+        if data.title is not None:
+            entry["title"] = data.title
+        if data.url is not None:
+            entry["url"] = data.url
+        if data.image is not None:
+            entry["img"] = data.image
+        if data.end is not None:
+            format_timestamp(data.end)
+            if data.end < data.start:
+                msg = "Chapter end precedes start"
+                raise ValueError(msg)
+            entry["endTime"] = data.end
+        if not data.toc:
+            entry["toc"] = False
+        entries.append(entry)
+    return {"version": PCI_VERSION, "chapters": entries}
 
 
 def chapters_to_pci_json(
-    chapters: Iterable[Chapter],
-    indent: int | None = None,
+    chapters: Iterable[ChapterInput], indent: int | None = None
 ) -> str:
-    """Serialize chapters to a PodcastIndex chapters JSON string."""
-    return json.dumps(chapters_to_pci_dict(chapters), indent=indent)
+    """Serialize chapters to PCI JSON without nonstandard NaN/Infinity values."""
+    return json.dumps(chapters_to_pci_dict(chapters), indent=indent, allow_nan=False)
 
 
-def chapters_to_psc_element(chapters: Iterable[Chapter]) -> ElementTree.Element:
-    """Build a ``<psc:chapters>`` element containing the given chapters."""
+def chapters_to_psc_element(chapters: Iterable[ChapterInput]) -> ElementTree.Element:
+    """Build PSC XML, omitting silent markers and PCI end boundaries."""
     ElementTree.register_namespace("psc", PSC_NAMESPACE)
-    root = ElementTree.Element(
-        f"{{{PSC_NAMESPACE}}}chapters",
-        {"version": PSC_VERSION},
-    )
+    root = ElementTree.Element(f"{{{PSC_NAMESPACE}}}chapters", {"version": PSC_VERSION})
     for chapter in chapters:
-        chapter_ = Chapter(*chapter)
-        attrib = {"start": secs_to_ts(chapter_.start), "title": chapter_.title}
-        if chapter_.url is not None:
-            attrib["href"] = chapter_.url
-        if chapter_.image is not None:
-            attrib["image"] = chapter_.image
-        ElementTree.SubElement(root, f"{{{PSC_NAMESPACE}}}chapter", attrib)
+        data = _data(chapter)
+        if not data.toc:
+            continue
+        attributes = {"start": format_timestamp(data.start), "title": data.title or ""}
+        if data.url is not None:
+            attributes["href"] = data.url
+        if data.image is not None:
+            attributes["image"] = data.image
+        ElementTree.SubElement(root, f"{{{PSC_NAMESPACE}}}chapter", attributes)
     return root
 
 
-def chapters_to_psc_xml(chapters: Iterable[Chapter]) -> str:
-    """Serialize chapters to a Podlove Simple Chapters XML string."""
-    return ElementTree.tostring(
-        chapters_to_psc_element(chapters),
-        encoding="unicode",
-    )
+def chapters_to_psc_xml(chapters: Iterable[ChapterInput]) -> str:
+    """Serialize visible chapters to PSC XML with fractional starts."""
+    return ElementTree.tostring(chapters_to_psc_element(chapters), encoding="unicode")
 
 
-def chapters_to_description(chapters: Iterable[Chapter]) -> str:
-    """Serialize chapters to description-embed text (one chapter per line)."""
+def chapters_to_description(chapters: Iterable[ChapterInput]) -> str:
+    """Serialize visible chapters as lines, retaining fractional starts."""
     lines = []
     for chapter in chapters:
-        chapter_ = Chapter(*chapter)
-        line = f"{secs_to_ts(chapter_.start)} {chapter_.title}"
-        if chapter_.url is not None and chapter_.url not in chapter_.title:
-            line += f" {chapter_.url}"
+        data = _data(chapter)
+        if not data.toc:
+            continue
+        title = data.title or ""
+        line = f"{format_timestamp(data.start)} {title}"
+        if data.url is not None and data.url not in title:
+            line += f" {data.url}"
         lines.append(line)
     return "\n".join(lines)

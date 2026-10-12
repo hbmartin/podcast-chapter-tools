@@ -1,0 +1,284 @@
+"""Bounded HTML preparation and line boundaries for untrusted show notes."""
+
+import re
+from collections.abc import Iterator
+from dataclasses import dataclass
+from html import unescape
+from html.parser import HTMLParser
+
+_BLOCKS = frozenset(
+    {
+        "address",
+        "aside",
+        "br",
+        "dd",
+        "details",
+        "dialog",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "header",
+        "hgroup",
+        "hr",
+        "p",
+        "div",
+        "li",
+        "ul",
+        "ol",
+        "section",
+        "article",
+        "blockquote",
+        "main",
+        "nav",
+        "pre",
+        "summary",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+    }
+)
+_VOID = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+# Bounded alternatives cannot repeatedly scan an unbounded entity suffix.
+_ENTITY = re.compile(
+    r"&(?:#[0-9]{1,10};?|#[xX][0-9a-fA-F]{1,8};?|[A-Za-z][A-Za-z0-9]{0,31};?)"
+)
+
+
+def _tag_end(text: str, cursor: int) -> tuple[int, bool]:
+    quote = ""
+    nested = False
+    while cursor < len(text):
+        char = text[cursor]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == ">":
+            break
+        elif char == "<":
+            nested = True
+        cursor += 1
+    return cursor, nested
+
+
+def _markup_parts(text: str) -> Iterator[tuple[bool, str]]:
+    """Yield complete tags or literal data, scanning each candidate once."""
+    index = 0
+    while index < len(text):
+        start = text.find("<", index)
+        if start < 0:
+            yield False, text[index:]
+            break
+        yield False, text[index:start]
+        if text.startswith("<!--", start):
+            end = text.find("-->", start + 4)
+            if end < 0:
+                yield False, text[start:]
+                break
+            index = end + 3
+            continue
+        name_start = start + 1
+        if text[name_start : name_start + 1] == "/":
+            name_start += 1
+        initial = text[name_start : name_start + 1]
+        if not initial.isascii() or not initial.isalpha():
+            yield False, "<"
+            index = start + 1
+            continue
+        cursor, nested = _tag_end(text, name_start)
+        if cursor == len(text):
+            yield False, text[start:]
+            break
+        yield not nested, text[start : cursor + 1]
+        index = cursor + 1
+
+
+@dataclass(frozen=True)
+class DescriptionLine:
+    """Visible text with exact offsets into its original inline markup."""
+
+    text: str
+    raw: str
+    offsets: tuple[int, ...]
+    ends: tuple[int, ...]
+    urls: tuple[str | None, ...]
+
+
+class _Lines(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.lines: list[DescriptionLine] = []
+        self._raw: list[str] = []
+        self._text: list[str] = []
+        self._offsets: list[int] = []
+        self._ends: list[int] = []
+        self._urls: list[str | None] = []
+        self._anchors: list[str | None] = []
+        self._length = 0
+        self._hidden: str | None = None
+
+    def boundary(self) -> None:
+        if self._offsets:
+            self.lines.append(
+                DescriptionLine(
+                    "".join(self._text),
+                    "".join(self._raw),
+                    tuple(self._offsets),
+                    tuple(self._ends),
+                    tuple(self._urls),
+                )
+            )
+        self._raw = []
+        self._text = []
+        self._offsets = []
+        self._ends = []
+        self._urls = []
+        self._length = 0
+
+    def _append(self, raw: str, visible: str) -> None:
+        if visible in {"\r", "\n", "\r\n"}:
+            self.boundary()
+            return
+        self._raw.append(raw)
+        self._text.append(visible)
+        if raw == visible:
+            self._offsets.extend(range(self._length, self._length + len(raw)))
+            self._ends.extend(range(self._length + 1, self._length + len(raw) + 1))
+        else:
+            self._offsets.extend([self._length] * len(visible))
+            self._ends.extend([self._length + len(raw)] * len(visible))
+        self._urls.extend([self._anchors[-1] if self._anchors else None] * len(visible))
+        self._length += len(raw)
+
+    def handle_data(self, data: str) -> None:
+        if self._hidden:
+            return
+        for index, line in enumerate(data.splitlines(keepends=True)):
+            if index:
+                self.boundary()
+            part = line.rstrip("\r\n")
+            cursor = 0
+            for match in _ENTITY.finditer(part):
+                self._append(part[cursor : match.start()], part[cursor : match.start()])
+                self._append(match[0], unescape(match[0]))
+                cursor = match.end()
+            self._append(part[cursor:], part[cursor:])
+            if line.endswith(("\r", "\n")):
+                self.boundary()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._hidden:
+            return
+        if tag in {"script", "style"}:
+            self._hidden = tag
+        elif tag in _BLOCKS:
+            self.boundary()
+        else:
+            raw = self.get_starttag_text() or ""
+            self._raw.append(raw)
+            self._length += len(raw)
+            if tag == "a":
+                href = dict(attrs).get("href")
+                self._anchors.append(
+                    href if href and href.startswith(("http://", "https://")) else None
+                )
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._hidden:
+            if self._hidden == tag:
+                self._hidden = None
+            return
+        if tag in _BLOCKS:
+            self.boundary()
+        else:
+            raw = f"</{tag}>"
+            self._raw.append(raw)
+            self._length += len(raw)
+            if tag == "a" and self._anchors:
+                self._anchors.pop()
+
+
+def description_lines(text: str) -> list[DescriptionLine]:
+    """Normalize boundaries without examining tag attributes as chapter text."""
+    parser = _Lines()
+    for is_tag, part in _markup_parts(text):
+        if is_tag:
+            parser.feed(part)
+            # Suppression is explicit; avoid buffering later fragments as CDATA.
+            parser.clear_cdata_mode()
+            parser.close()  # Flush invalid complete tags without buffering suffixes.
+        else:
+            parser.handle_data(part)
+    parser.boundary()
+    return parser.lines
+
+
+class _Inline(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.parts: list[str] = []
+        self.stack: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 - HTMLParser callback.
+        self.parts.append(self.get_starttag_text() or "")
+        if tag not in _VOID:
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.stack and self.stack[-1] == tag:
+            self.parts.append(f"</{tag}>")
+            self.stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def inline_fragment(text: str) -> str:
+    """Retain inline markup without emitting unmatched wrapper closing tags."""
+    parser = _Inline()
+    for is_tag, part in _markup_parts(text):
+        if is_tag:
+            parser.feed(part)
+            parser.clear_cdata_mode()
+            parser.close()
+        else:
+            parser.handle_data(part)
+    parser.parts.extend(f"</{tag}>" for tag in reversed(parser.stack))
+    return "".join(parser.parts)
+
+
+def plain_text(text: str) -> str:
+    """Remove markup and decode entities through bounded HTML preparation."""
+    return " ".join(" ".join(line.text for line in description_lines(text)).split())

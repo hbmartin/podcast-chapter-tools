@@ -59,7 +59,8 @@ def test_url_extracted_from_title():
 
 
 def test_retry_splits_single_run():
-    chapters = extract_description_chapters(SINGLE_HTML_RUN)
+    assert extract_description_chapters(SINGLE_HTML_RUN) is None
+    chapters = extract_description_chapters(SINGLE_HTML_RUN, mode="lenient")
     assert chapters is not None
     assert [c.start for c in chapters] == [0, 300, 600]
     assert chapters[0].title == "Intro"

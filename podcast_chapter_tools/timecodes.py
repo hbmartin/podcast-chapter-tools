@@ -1,5 +1,8 @@
 """Conversions between ``HH:MM:SS``-style timestamps and seconds."""
 
+import math
+from decimal import Decimal
+
 _SECS_PER_MINUTE = 60
 _SECS_PER_HOUR = 3600
 _MAX_TIME_PARTS = 3
@@ -58,3 +61,31 @@ def secs_to_ts(seconds: int) -> str:
     if hours:
         return f"{hours}:{minutes:02}:{secs:02}"
     return f"{minutes}:{secs:02}"
+
+
+def parse_timestamp(time_string: str) -> float:
+    """Parse an NPT timestamp without truncating fractional seconds."""
+    whole = ts_to_secs(time_string)
+    raw = time_string.strip()
+    fraction = raw.partition(".")[2]
+    try:
+        seconds = float(Decimal(whole) + (Decimal("0." + fraction) if fraction else 0))
+    except (OverflowError, ValueError) as exc:
+        msg = f"Timestamp is out of range: {time_string!r}"
+        raise ValueError(msg) from exc
+    if not math.isfinite(seconds):
+        msg = f"Timestamp must be finite: {time_string!r}"
+        raise ValueError(msg)
+    return seconds
+
+
+def format_timestamp(seconds: float) -> str:
+    """Format a finite nonnegative time, retaining its decimal fraction."""
+    if isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0:
+        msg = f"Seconds must be finite and nonnegative: {seconds!r}"
+        raise ValueError(msg)
+    decimal = Decimal(str(seconds))
+    whole = int(decimal)
+    fraction = decimal - whole
+    suffix = format(fraction, "f")[1:].rstrip("0") if fraction else ""
+    return secs_to_ts(whole) + suffix

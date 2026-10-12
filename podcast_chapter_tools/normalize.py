@@ -1,14 +1,44 @@
 """Validation and normalization helpers for extracted chapters."""
 
-import html
+import math
 from collections.abc import Iterable
+from dataclasses import replace
 
-from .entities import Chapter, _re_html_tag
+from .entities import Chapter, ChapterData
+from .markup import plain_text
 
 
 def strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities, collapsing extra whitespace."""
-    return " ".join(html.unescape(_re_html_tag.sub(" ", text)).split())
+    return plain_text(text)
+
+
+def normalize_chapter_data(
+    chapters: Iterable[ChapterData],
+    *,
+    sort: bool = True,
+    dedupe: bool = True,
+    max_start: float | None = None,
+    strip_titles: bool = False,
+) -> list[ChapterData]:
+    """Sort/filter rich chapters without losing optional fields or fractions."""
+    cleaned: list[ChapterData] = []
+    seen: set[float] = set()
+    for chapter in chapters:
+        if not math.isfinite(chapter.start) or chapter.start < 0:
+            continue
+        if max_start is not None and chapter.start > max_start:
+            continue
+        if dedupe and chapter.start in seen:
+            continue
+        seen.add(chapter.start)
+        cleaned_chapter = chapter
+        if strip_titles and chapter.title is not None:
+            cleaned_chapter = replace(chapter, title=strip_html(chapter.title))
+        cleaned.append(cleaned_chapter)
+    if sort:
+        cleaned.sort(key=lambda c: c.start)
+    return cleaned
 
 
 def normalize_chapters(

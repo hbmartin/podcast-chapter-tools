@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 from conftest import FakeResponse
 
-from podcast_chapter_tools import extractors
+from podcast_chapter_tools import extractors, transport
 from podcast_chapter_tools.extractors import (
     extract_pci_chapters,
     find_pci_chapters_url,
@@ -26,12 +26,13 @@ def test_extract_pci_chapters_missing_key():
 
 def test_extract_pci_chapters_bad_start(pci_json):
     pci_json["chapters"][0]["startTime"] = "not-a-number"
-    assert extract_pci_chapters(pci_json) is None
+    assert extract_pci_chapters(pci_json) == EXPECTED[1:]
+    assert extract_pci_chapters(pci_json, strict=True) is None
 
 
 def test_get_and_extract_fetches(monkeypatch, pci_json):
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data=pci_json),
     )
@@ -41,7 +42,7 @@ def test_get_and_extract_fetches(monkeypatch, pci_json):
 
 def test_get_and_extract_http_error(monkeypatch):
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(is_success=False, status_code=500),
     )
@@ -50,9 +51,9 @@ def test_get_and_extract_http_error(monkeypatch):
 
 def test_get_and_extract_request_error(monkeypatch):
     def boom(*a, **kw):
-        raise extractors.httpx2.RequestError("timeout")
+        raise transport.httpx2.RequestError("timeout")
 
-    monkeypatch.setattr(extractors.httpx2, "get", boom)
+    monkeypatch.setattr(transport.httpx2, "get", boom)
     assert get_and_extract_pci_chapters("https://example.com/chapters.json") is None
 
 
@@ -65,7 +66,7 @@ def test_get_and_extract_bad_json_response(monkeypatch):
             raise ValueError("bad json")
 
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: BadJsonResponse(),
     )
@@ -74,7 +75,7 @@ def test_get_and_extract_bad_json_response(monkeypatch):
 
 def test_get_and_extract_writes_archive(monkeypatch, pci_json, tmp_path):
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data=pci_json),
     )
@@ -93,16 +94,16 @@ def test_get_and_extract_returns_chapters_when_archive_write_fails(
     tmp_path,
 ):
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data=pci_json),
     )
     archive = tmp_path / "chapters.json"
 
-    def fail_write(self, data, encoding=None):
+    def fail_write(path, raw):
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(type(archive), "write_text", fail_write)
+    monkeypatch.setattr(transport, "_atomic_write", fail_write)
     chapters = get_and_extract_pci_chapters(
         "https://example.com/chapters.json",
         archive_path_json=archive,
@@ -111,22 +112,30 @@ def test_get_and_extract_returns_chapters_when_archive_write_fails(
     assert chapters == EXPECTED
 
 
-def test_get_and_extract_reads_archive(monkeypatch, pci_json, tmp_path):
+def test_get_and_extract_explicitly_trusts_legacy_archive(
+    monkeypatch, pci_json, tmp_path
+):
     archive = tmp_path / "chapters.json"
     archive.write_text(json.dumps(pci_json))
 
     def boom(*a, **kw):
         raise AssertionError("should not fetch when archive exists")
 
-    monkeypatch.setattr(extractors.httpx2, "get", boom)
+    monkeypatch.setattr(transport.httpx2, "get", boom)
     chapters = get_and_extract_pci_chapters(
         "https://example.com/chapters.json",
         archive_path_json=archive,
+        trust_legacy_archive=True,
     )
     assert chapters == EXPECTED
 
 
-def test_get_and_extract_bad_archive_json(tmp_path):
+def test_get_and_extract_bad_archive_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        transport.httpx2,
+        "get",
+        lambda *a, **kw: FakeResponse(is_success=False, status_code=404),
+    )
     archive = tmp_path / "chapters.json"
     archive.write_text("{")
     assert (
@@ -138,7 +147,12 @@ def test_get_and_extract_bad_archive_json(tmp_path):
     )
 
 
-def test_get_and_extract_bad_archive_utf8(tmp_path):
+def test_get_and_extract_bad_archive_utf8(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        transport.httpx2,
+        "get",
+        lambda *a, **kw: FakeResponse(is_success=False, status_code=404),
+    )
     archive = tmp_path / "chapters.json"
     archive.write_bytes(b"\xff")
     assert (
@@ -185,9 +199,10 @@ def test_get_and_extract_logs_when_extraction_fails(monkeypatch):
     # A well-formed JSON response that has no "chapters" key: the fetch
     # succeeds but extraction returns None.
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(json_data={"version": "1.2.0"}),
     )
     assert get_and_extract_pci_chapters(url) is None
-    warning.assert_called_with("Failed to extract PCI for {} @ {}", url, None)
+    assert warning.call_args.args[0] == "Chapter extraction failed: {}"
+    assert url in str(warning.call_args.args[1])
