@@ -11,7 +11,8 @@ name = "podcast-chapter-tools"
 version = "0.2.0"
 description = " Extract and transform podcast chapter information between PodCastIndex chapters, Podlove simple chapters, and description embeds."
 readme = "README.md"
-license = {file = "LICENSE.txt"}
+license = "Apache-2.0"
+license-files = ["LICENSE.txt"]
 requires-python = ">=3.13"
 authors = [
     { name = "Harold Martin", email = "Harold.Martin@gmail.com" },
@@ -23,14 +24,13 @@ classifiers = [
     "Framework :: Datasette",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 
 dependencies = [
-    "httpx2",
+    "httpx2>=2.9.1",
     "loguru>=0.7.3",
 ]
 
@@ -41,6 +41,7 @@ id3 = ["mutagen"]
 dev = [
     "mutagen",
     "pyrefly",
+    "pyroma621==6.1.0",
     "pytest",
     "pytest-cov",
     "ruff",

@@ -6,7 +6,7 @@
 [![Checked with ty](https://img.shields.io/badge/ty-checked-blue.svg)](https://docs.astral.sh/ty/)
 [![twitter](https://img.shields.io/badge/@hmartin-00aced.svg?logo=twitter&logoColor=white)](https://twitter.com/hmartin)
 
-<img src=".idea/icon.svg" width="100" align="right">
+<img src="https://raw.githubusercontent.com/hbmartin/podcast-chapter-tools/main/.idea/icon.svg" width="100" align="right">
 
 Extract and transform podcast chapter information between
 [PodcastIndex (PCI) chapters](https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/examples/chaptering/jsonChapters.md),
@@ -94,7 +94,15 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyrefly check
 uv run ty check
+uv run --locked pyroma --min 10 .
 ```
+
+Packaging metadata is checked with `pyroma621` (the command is `pyroma`).
+The checker is pinned while it is being evaluated, and its separate CI job
+runs on Python 3.13 and 3.14 with `continue-on-error: true`. A score below
+10 or a checker error is visible in the job logs but does not block CI;
+advisory findings are shown without affecting the score. Review the findings
+and checker behavior before upgrading it or making the job blocking.
 
 The `ai/` directory contains experimental scripts for generating chapters
 from transcripts with LLMs; its dependencies live in `ai/requirements.txt`
