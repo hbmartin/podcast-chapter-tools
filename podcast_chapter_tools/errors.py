@@ -1,8 +1,40 @@
 """Typed failures for parsing and fetching; missing chapters are not failures."""
 
-from functools import partial
+from types import MemberDescriptorType
 
 from .entities import ChapterIssue, ChapterParseResult
+
+
+def _restore_error[E: BaseException](
+    cls: type[E],
+    # Exception arguments retain their immutable pickle representation.
+    args: tuple[object, ...],  # garuff: ignore[GAC005]
+    attributes: dict[str, object],
+    slots: list[tuple[type, str, object]],
+) -> E:
+    """Restore exception state without invoking subclass constructors."""
+    error = BaseException.__new__(cls, *args)
+    BaseException.__init__(error, *args)
+    error.__dict__.update(attributes)
+    for owner, name, value in slots:
+        vars(owner)[name].__set__(error, value)
+    return error
+
+
+def _error_reduction(
+    error: BaseException,
+) -> tuple[object, ...]:  # garuff: ignore[GAC005] - Pickle requires a protocol tuple.
+    """Capture dictionary and declared slot state, including private slots."""
+    slots: list[tuple[type, str, object]] = []
+    for owner in type(error).__mro__:
+        for name, descriptor in vars(owner).items():
+            if isinstance(descriptor, MemberDescriptorType):
+                try:
+                    value = descriptor.__get__(error, type(error))
+                except AttributeError:
+                    continue
+                slots.append((owner, name, value))
+    return (_restore_error, (type(error), error.args, error.__dict__, slots))
 
 
 class ChapterParseError(ValueError):
@@ -28,11 +60,7 @@ class ChapterParseError(ValueError):
     # Pickle reconstruction uses the immutable protocol tuple.
     def __reduce__(self) -> tuple[object, ...]:  # garuff: ignore[GAC005]
         """Describe pickle reconstruction with the original parse context."""
-        return (
-            partial(type(self), issues=self.issues, source=self.source, guid=self.guid),
-            (self.message,),
-            self.__dict__,
-        )
+        return _error_reduction(self)
 
 
 class ChapterFetchError(Exception):
@@ -47,7 +75,7 @@ class ChapterFetchError(Exception):
     # Pickle reconstruction uses the immutable protocol tuple.
     def __reduce__(self) -> tuple[object, ...]:  # garuff: ignore[GAC005]
         """Describe pickle reconstruction with the original request URL."""
-        return (partial(type(self), url=self.url), (self.message,), self.__dict__)
+        return _error_reduction(self)
 
 
 class ChapterHTTPError(ChapterFetchError):
@@ -64,16 +92,7 @@ class ChapterHTTPError(ChapterFetchError):
     # Pickle reconstruction uses the immutable protocol tuple.
     def __reduce__(self) -> tuple[object, ...]:  # garuff: ignore[GAC005]
         """Describe pickle reconstruction with HTTP and retry context."""
-        return (
-            partial(
-                type(self),
-                url=self.url,
-                status_code=self.status_code,
-                retry_after=self.retry_after,
-            ),
-            (),
-            self.__dict__,
-        )
+        return _error_reduction(self)
 
 
 class ChapterTransportError(ChapterFetchError):

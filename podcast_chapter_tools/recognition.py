@@ -1,12 +1,12 @@
 """Shared, bounded recognition of chapter-line prefixes."""
 
-_FORMAT_MARKS = "\ufeff\u200b"
+from unicodedata import category
 
 
 def _padding_end(text: str, index: int, *, leading: bool = False) -> int:
     """Skip line-local padding and optionally leading format marks."""
     while index < len(text) and text[index] not in "\r\n":
-        if not (text[index].isspace() or (leading and text[index] in _FORMAT_MARKS)):
+        if not (text[index].isspace() or (leading and category(text[index]) == "Cf")):
             break
         index += 1
     return index

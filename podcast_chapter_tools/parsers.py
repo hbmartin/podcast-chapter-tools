@@ -275,8 +275,16 @@ def parse_feed_chapters(
     xml: str | bytes, *, source: str | None = None
 ) -> FeedChapterIndex:
     """Parse an RSS feed once into a GUID index, without fetching or reading files."""
+    return _parse_feed_chapters(xml, source=source)
+
+
+def _parse_feed_chapters(
+    xml: str | bytes, *, source: str | None = None, encoding: str | None = None
+) -> FeedChapterIndex:
+    """Build a feed index with an optional transport-selected XML encoding."""
     try:
-        root = ElementTree.fromstring(xml)
+        parser = ElementTree.XMLParser(encoding=encoding) if encoding else None
+        root = ElementTree.fromstring(xml, parser=parser)
     except (ElementTree.ParseError, ValueError, LookupError) as exc:
         msg = "Invalid feed XML"
         raise ChapterParseError(msg, source=source) from exc

@@ -1,5 +1,6 @@
 """Legacy tuple extractors and lazy access to HTTP fetching."""
 
+import codecs
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -11,6 +12,7 @@ from .entities import Chapter, ChapterParseResult
 from .errors import ChapterFetchError, ChapterParseError
 from .parsers import (
     FeedChapterIndex,
+    _parse_feed_chapters,
     parse_feed_chapters,
     parse_pci_chapters,
     parse_psc_chapters,
@@ -145,18 +147,66 @@ def _fetch_feed_index(
     headers: dict[str, str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> FeedChapterIndex:
-    """Fetch a feed, honoring an explicit HTTP charset before XML parsing."""
+    """Fetch a feed, preferring its BOM and recovering from invalid charsets."""
     from .transport import get_response  # noqa: PLC0415 - Keep HTTP imports lazy.
 
     response = get_response(feed_url, headers, timeout)
-    xml: str | bytes = response.content
-    if charset := response.charset_encoding:
+    raw = response.content
+    # Check longer BOMs first because UTF-32 LE starts with the UTF-16 LE BOM.
+    for bom, encoding in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF8, "utf-8-sig"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    ):
+        if raw.startswith(bom):
+            try:
+                return _encoded_feed_index(raw, encoding, feed_url)
+            except (LookupError, UnicodeError) as exc:
+                msg = "Invalid feed BOM encoding"
+                raise ChapterParseError(msg, source=feed_url) from exc
+    charset = response.charset_encoding
+    if not charset:
+        return parse_feed_chapters(raw, source=feed_url)
+    try:
+        return _encoded_feed_index(raw, charset, feed_url)
+    except (LookupError, UnicodeError) as exc:
         try:
-            xml = response.content.decode(charset)
-        except (LookupError, UnicodeError) as exc:
+            index = parse_feed_chapters(raw, source=feed_url)
+        except ChapterParseError as fallback:
             msg = "Invalid feed encoding"
-            raise ChapterParseError(msg, source=feed_url) from exc
-    return parse_feed_chapters(xml, source=feed_url)
+            error = ChapterParseError(msg, source=feed_url)
+            error.add_note(f"XML byte fallback failed: {fallback}")
+            raise error from exc
+        logger.warning(
+            "Invalid HTTP feed charset {} for {}; "
+            "recovered using XML byte detection: {}",
+            charset,
+            feed_url,
+            exc,
+        )
+        return index
+
+
+def _encoded_feed_index(raw: bytes, charset: str, source: str) -> FeedChapterIndex:
+    """Parse native encodings as bytes, checking decoding only after failure."""
+    codec = codecs.lookup(charset).name
+    native = {
+        "utf-8": "UTF-8",
+        "utf-8-sig": "UTF-8",
+        "utf-16": "UTF-16",
+        "iso8859-1": "ISO-8859-1",
+        "ascii": "US-ASCII",
+    }.get(codec)
+    if native is None:
+        return parse_feed_chapters(raw.decode(charset), source=source)
+    try:
+        return _parse_feed_chapters(raw, source=source, encoding=native)
+    except ChapterParseError:
+        # Structural XML errors do not authorize charset fallback. Decode errors do.
+        raw.decode(charset)
+        raise
 
 
 def _file_index(feed_file: Path) -> FeedChapterIndex | None:

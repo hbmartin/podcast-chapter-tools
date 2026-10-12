@@ -31,13 +31,14 @@ def _marker_start(
     return marker
 
 
-def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:  # noqa: C901 - One forward scan, including explicit lenient mode.
+def _timestamps(  # noqa: C901 - One forward scan, including explicit lenient mode.
+    text: str, mode: DescriptionMode, explicit_start: int | None
+) -> list[tuple[int, int, str, bool]]:
     """Collect timestamp tokens and title offsets in one forward scan."""
-    matches: list[tuple[int, int, str]] = []
-    explicit_start = line_timestamp_start(text)
-    if mode == "strict" and explicit_start is None:
+    matches: list[tuple[int, int, str, bool]] = []
+    index = explicit_start if mode == "strict" else 0
+    if index is None:
         return matches
-    index = explicit_start if mode == "strict" and explicit_start is not None else 0
     while index < len(text):
         if not text[index].isdigit():
             index += 1
@@ -53,7 +54,11 @@ def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:
             token[-1:] in {":", "."}
             and len(token) > 1
             and token[-2].isdigit()
-            and (index == len(text) or text[index].isspace() or text[index] in ")]")
+            and (
+                index == len(text)
+                or text[index].isspace()
+                or text[index] in ")]" + _SEPARATORS
+            )
         ):
             token = token[:-1]
         if ":" not in token:
@@ -70,7 +75,7 @@ def _timestamps(text: str, mode: DescriptionMode) -> list[tuple[int, int, str]]:
             end += 1
         while end < len(text) and (text[end].isspace() or text[end] in _SEPARATORS):
             end += 1
-        matches.append((marker_start, end, token))
+        matches.append((marker_start, end, token, start == explicit_start))
         if mode == "strict":
             break
         index = end
@@ -106,13 +111,17 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
     chapters: list[ChapterData] = []
     issues: list[ChapterIssue] = []
     entry_index = 0
-    for line in description_lines(description):
-        matches = _timestamps(line.text, mode)
+    for line in description_lines(description, recover_chapters=True):
         explicit_start = line_timestamp_start(line.text)
-        for index, (marker, end, token) in enumerate(matches):
+        matches = _timestamps(line.text, mode, explicit_start)
+        for index, (_, end, token, explicit) in enumerate(matches):
             title_end = (
                 matches[index + 1][0] if index + 1 < len(matches) else len(line.text)
             )
+            title = _title(line, end, title_end)
+            text_title = plain_text(title)
+            if not text_title and mode == "lenient" and not explicit:
+                continue
             try:
                 start = parse_timestamp(token)
             except (ValueError, OverflowError) as exc:
@@ -121,15 +130,10 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
                 )
                 entry_index += 1
                 continue
-            title = _title(line, end, title_end)
             url_match = _re_url.search(title)
             enclosing_url = line.url_at(end)
             url = unescape(url_match[0]) if url_match else enclosing_url
-            text_title = plain_text(title)
             if not text_title:
-                numeric_start = marker + (line.text[marker : marker + 1] in {"(", "["})
-                if mode == "lenient" and numeric_start != explicit_start:
-                    continue
                 issues.append(
                     ChapterIssue(
                         entry_index,
