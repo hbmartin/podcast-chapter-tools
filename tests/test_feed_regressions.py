@@ -1,3 +1,4 @@
+import codecs
 import subprocess
 import sys
 import traceback
@@ -18,10 +19,15 @@ from podcast_chapter_tools import (
     transport,
 )
 from podcast_chapter_tools.cli import main
-from podcast_chapter_tools.extractors import _fetch_feed_index
+from podcast_chapter_tools.extractors import _encoded_feed_index, _fetch_feed_index
 
 URL = "https://example.com/feed.xml"
 FEED = '<rss xmlns:psc="http://podlove.org/simple-chapters"><channel><item><guid>g</guid><psc:chapters><psc:chapter start="0:00" title="Café"/></psc:chapters></item></channel></rss>'
+
+
+class _WithoutWholeFeedDecode(bytes):
+    def decode(self, *_args, **_kwargs):
+        pytest.fail("Native feed failure decoded the whole document")
 
 
 def test_unknown_xml_codec_is_typed_and_adapters_recover(tmp_path, monkeypatch, capsys):
@@ -167,8 +173,6 @@ def test_http_bom_overrides_header_and_declaration(encoding, monkeypatch):
 
 @pytest.mark.parametrize("encoding", ["utf-16-be", "utf-32-be"])
 def test_big_endian_http_bom_overrides_unknown_charset(encoding, monkeypatch):
-    import codecs  # noqa: PLC0415 - BOM fixture helper.
-
     bom = codecs.BOM_UTF16_BE if encoding == "utf-16-be" else codecs.BOM_UTF32_BE
     response = httpx2.Response(
         200,
@@ -264,5 +268,89 @@ for parse in (lambda: _fetch_feed_index('https://example.com'), lambda: parse_fe
 assert peaks[0] + 3 * 1024 * 1024 < peaks[1], peaks
 """
     subprocess.run(  # noqa: S603 - isolated allocation regression with fixed code.
+        [sys.executable, "-c", code], check=True, capture_output=True, timeout=30
+    )
+
+
+@pytest.mark.parametrize(
+    ("charset", "raw"),
+    [
+        ("iso-8859-1", b"<rss><channel></rss>"),
+        ("utf-8", b"<rss/>"),
+        ("us-ascii", b"<rss/>"),
+    ],
+)
+def test_native_failures_without_encoding_ambiguity_skip_decoding(
+    charset, raw, monkeypatch
+):
+    decoder = Mock(side_effect=AssertionError("Unnecessary encoding validation"))
+    monkeypatch.setattr(extractors.codecs, "getincrementaldecoder", decoder)
+    with pytest.raises(ChapterParseError):
+        _encoded_feed_index(_WithoutWholeFeedDecode(raw), charset, URL)
+    decoder.assert_not_called()
+
+
+def test_native_xml_failure_validates_bounded_chunks_and_flushes(monkeypatch):
+    prefix = b"<rss><channel><description>"
+    raw = prefix + b"x" * (16383 - len(prefix)) + "é".encode() + b"x" * 20000
+    raw += b"</description></rss>"
+    chunks = []
+    real_decoder = codecs.getincrementaldecoder
+
+    def decoder_factory(encoding):
+        factory = real_decoder(encoding)
+
+        class Decoder:
+            def __init__(self, *, errors):
+                self.decoder = factory(errors=errors)
+
+            def decode(self, data, *, final=False):
+                chunks.append((len(data), final))
+                return self.decoder.decode(data, final=final)
+
+        return Decoder
+
+    monkeypatch.setattr(extractors.codecs, "getincrementaldecoder", decoder_factory)
+    with pytest.raises(ChapterParseError) as caught:
+        _encoded_feed_index(raw, "utf-8", URL)
+    assert isinstance(caught.value.__cause__, parsers.ElementTree.ParseError)
+    assert sum(size for size, _ in chunks) == len(raw)
+    assert max(size for size, _ in chunks) <= 16 * 1024
+    assert chunks[-1] == (0, True)
+
+
+@pytest.mark.parametrize("charset", ["utf-8", "utf-16"])
+def test_native_xml_failure_flush_detects_incomplete_encoding(charset):
+    raw = "<rss><channel>".encode(charset)
+    raw += b"\xc3" if charset == "utf-8" else b"a"
+    with pytest.raises(UnicodeDecodeError):
+        _encoded_feed_index(raw, charset, URL)
+
+
+def test_native_encoding_validation_allocation_is_bounded():
+    code = """
+import tracemalloc
+from unittest.mock import patch
+from xml.etree import ElementTree
+from podcast_chapter_tools import ChapterParseError
+from podcast_chapter_tools.extractors import _encoded_feed_index
+raw = b'x' * (5 * 1024 * 1024)
+def failed_xml(*args, **kwargs):
+    try:
+        raise ElementTree.ParseError('malformed XML')
+    except ElementTree.ParseError as error:
+        raise ChapterParseError('Invalid feed XML') from error
+with patch('podcast_chapter_tools.extractors._parse_feed_chapters', failed_xml):
+    tracemalloc.start()
+    try:
+        _encoded_feed_index(raw, 'utf-8', 'input')
+    except ChapterParseError:
+        pass
+    else:
+        raise AssertionError('Malformed XML was accepted')
+    _, peak = tracemalloc.get_traced_memory()
+    assert peak < 256 * 1024, peak
+"""
+    subprocess.run(  # noqa: S603 - fixed allocation regression in an isolated interpreter.
         [sys.executable, "-c", code], check=True, capture_output=True, timeout=30
     )

@@ -21,6 +21,14 @@ from .timecodes import ts_to_secs
 
 DEFAULT_TIMEOUT = 30.0
 _ts_to_secs = ts_to_secs
+_NATIVE_ENCODINGS = {
+    "utf-8": "UTF-8",
+    "utf-8-sig": "UTF-8",
+    "utf-16": "UTF-16",
+    "iso8859-1": "ISO-8859-1",
+    "ascii": "US-ASCII",
+}
+_ENCODING_CHECK_CHUNK = 16 * 1024
 
 
 def _log_result(result: ChapterParseResult) -> None:
@@ -192,20 +200,19 @@ def _fetch_feed_index(
 def _encoded_feed_index(raw: bytes, charset: str, source: str) -> FeedChapterIndex:
     """Parse native encodings as bytes, checking decoding only after failure."""
     codec = codecs.lookup(charset).name
-    native = {
-        "utf-8": "UTF-8",
-        "utf-8-sig": "UTF-8",
-        "utf-16": "UTF-16",
-        "iso8859-1": "ISO-8859-1",
-        "ascii": "US-ASCII",
-    }.get(codec)
+    native = _NATIVE_ENCODINGS.get(codec)
     if native is None:
         return parse_feed_chapters(raw.decode(charset), source=source)
     try:
         return _parse_feed_chapters(raw, source=source, encoding=native)
-    except ChapterParseError:
+    except ChapterParseError as exc:
         # Structural XML errors do not authorize charset fallback. Decode errors do.
-        raw.decode(charset)
+        if codec != "iso8859-1" and isinstance(exc.__cause__, ElementTree.ParseError):
+            decoder = codecs.getincrementaldecoder(codec)(errors="strict")
+            view = memoryview(raw)
+            for offset in range(0, len(raw), _ENCODING_CHECK_CHUNK):
+                decoder.decode(view[offset : offset + _ENCODING_CHECK_CHUNK])
+            decoder.decode(b"", final=True)
         raise
 
 

@@ -103,6 +103,8 @@ attributes = '<custom\\n' + '0:00 disabled alt="x"\\n' * 4000 + '>\\n0:00 Intro\
 assert len(parse_description_chapters(attributes, mode=mode).chapters) == 2
 closings = '<script>' + '</scripture>' * 100_000 + '</script foo=">">\\n0:00 Intro\\n1:00 End'
 assert len(parse_description_chapters(closings, mode=mode).chapters) == 2
+raw_tags = '<script/><style/><script x=/>a<b</script><style>a<b</style>' * 2000
+assert len(parse_description_chapters(raw_tags + '\\n0:00 Intro\\n1:00 End', mode=mode).chapters) == 2
 """
     subprocess.run(  # noqa: S603 - fixed test script, interpreter, and mode fixture
         [sys.executable, "-c", code, mode], check=True, timeout=5, capture_output=True

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 
-from .recognition import begins_chapter_line
+from .recognition import begins_chapter_line, line_timestamp_start
 
 _BLOCKS = frozenset(
     {
@@ -77,6 +77,9 @@ _ENTITY = re.compile(
     r"&(?:#[0-9]{1,10};?|#[xX][0-9a-fA-F]{1,8};?|[A-Za-z][A-Za-z0-9]{0,31};?)"
 )
 _HTML_SPACE = "\t\n\f\r "
+_LINE_SPACE = "\t\f "
+_ATTRIBUTE_NAME = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
+_INVALID_VALUE_START = "<=>`"
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
 _RAW_END = {
     tag: re.compile(rf"</{tag}(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
@@ -84,24 +87,42 @@ _RAW_END = {
 }
 
 
+def _line_padding_end(text: str, cursor: int) -> int:
+    """Skip ASCII HTML padding without crossing a physical line boundary."""
+    while cursor < len(text) and text[cursor] in _LINE_SPACE:
+        cursor += 1
+    return cursor
+
+
 def _has_attribute_assignment(text: str, cursor: int) -> bool:
-    """Find an unquoted attribute assignment on one physical continuation line."""
+    """Distinguish identifier-shaped attributes from chapter text and URLs."""
+    cursor = _line_padding_end(text, cursor)
+    if text[cursor : cursor + 1] == ">":
+        return True
+    start = line_timestamp_start(text, cursor)
+    if start is None:
+        return False
+    cursor = start
+    while cursor < len(text) and (text[cursor].isdigit() or text[cursor] in ":."):
+        cursor += 1
+    if text[cursor : cursor + 1] in {")", "]"}:
+        cursor += 1
     while cursor < len(text) and text[cursor] not in "\r\n>":
-        if text[cursor] in _HTML_SPACE + "/":
-            cursor += 1
-            continue
-        start = cursor
-        while cursor < len(text) and text[cursor] not in _HTML_SPACE + "/><='\"":
-            cursor += 1
-        if cursor == start:
+        cursor = _line_padding_end(text, cursor)
+        name = _ATTRIBUTE_NAME.match(text, cursor)
+        if name is None:
             return False
-        while cursor < len(text) and text[cursor] in "\t\f ":
-            cursor += 1
+        cursor = _line_padding_end(text, name.end())
         if text[cursor : cursor + 1] == "=":
-            cursor += 1
-            while cursor < len(text) and text[cursor] in "\t\f ":
-                cursor += 1
-            return cursor < len(text) and text[cursor] not in "<=>`"
+            cursor = _line_padding_end(text, cursor + 1)
+            return cursor < len(text) and text[cursor] not in _INVALID_VALUE_START
+        if cursor == name.end() and text[cursor : cursor + 1] not in {
+            "",
+            "\r",
+            "\n",
+            ">",
+        }:
+            return False
     return False
 
 
@@ -133,17 +154,19 @@ def _tag_end(
     return cursor, nested
 
 
-def _raw_parts(text: str, index: int, tag: str) -> tuple[list[tuple[bool, str]], int]:
+def _raw_parts(
+    text: str, index: int, tag: str, *, recover_chapters: bool = False
+) -> tuple[list[tuple[bool, str]], int]:
     """Split raw script/style contents from the matching closing tag."""
-    pattern = _RAW_END.get(tag)
-    closing = pattern.search(text, index) if pattern is not None else None
+    closing = _RAW_END[tag].search(text, index)
     if closing is None:
         return [(False, text[index:])], len(text)
-    end, _ = _tag_end(text, closing.end())
+    end, _ = _tag_end(text, closing.end(), recover_chapters=recover_chapters)
     if end == len(text):
         return [(False, text[index:])], end
-    # Raw blocks have no visible source spans; normalize tolerated suffixes.
-    return [(False, text[index : closing.start()]), (True, f"</{tag}>")], end + 1
+    # Suppressed contents have no source spans, including unfinished closings.
+    following = end if text[end] in "\r\n" else end + 1
+    return [(False, text[index : closing.start()]), (True, f"</{tag}>")], following
 
 
 class _TagShape(HTMLParser):
@@ -156,15 +179,23 @@ class _TagShape(HTMLParser):
         """Distinguish slash markers from slash-valued unquoted attributes."""
         self.self_closing = True
 
+    def raw_tag(self, part: str, tag: str) -> str | None:
+        """Classify one recognized raw opening tag with fresh parser state."""
+        self.reset()
+        self.self_closing = False
+        self.feed(part)
+        return None if self.self_closing else tag
 
-def _raw_tag(part: str) -> str | None:
-    """Recognize an ASCII raw tag that opens a non-self-closing block."""
-    raw_start = _RAW_START.match(part)
+
+def _raw_tag(
+    part: str, shape: _TagShape | None, *, valid: bool
+) -> tuple[str | None, _TagShape | None]:
+    """Recognize raw opening tags, reusing one lazily created shape parser."""
+    raw_start = _RAW_START.match(part) if valid else None
     if raw_start is None:
-        return None
-    shape = _TagShape()
-    shape.feed(part)
-    return None if shape.self_closing else raw_start[1].lower()
+        return None, shape
+    shape = shape or _TagShape()
+    return shape.raw_tag(part, raw_start[1].lower()), shape
 
 
 def _markup_parts(
@@ -172,6 +203,7 @@ def _markup_parts(
 ) -> Iterator[tuple[bool, str]]:
     """Yield complete tags or literal data, scanning each candidate once."""
     index = 0
+    shape = None
     while index < len(text):
         start = text.find("<", index)
         if start < 0:
@@ -204,9 +236,11 @@ def _markup_parts(
         part = text[start : cursor + 1]
         yield not nested, part
         index = cursor + 1
-        raw_tag = _raw_tag(part) if not nested else None
+        raw_tag, shape = _raw_tag(part, shape, valid=not nested)
         if raw_tag:
-            parts, index = _raw_parts(text, index, raw_tag)
+            parts, index = _raw_parts(
+                text, index, raw_tag, recover_chapters=recover_chapters
+            )
             yield from parts
 
 

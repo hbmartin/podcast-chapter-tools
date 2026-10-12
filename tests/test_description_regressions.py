@@ -251,6 +251,90 @@ def test_generic_stripping_does_not_recover_chapter_boundaries():
     assert strip_html("Call me at <a\n9:30 disabled>here</a>") == "Call me at here"
 
 
+@pytest.mark.parametrize("mode", ["strict", "lenient"])
+@pytest.mark.parametrize("suffix", [" -> more", " more", " > more"])
+def test_url_queries_do_not_hide_chapter_boundaries(mode, suffix):
+    url = "https://youtube.com/watch?v=abc"
+    text = f"0:00 Intro <b\n1:00 Video {url}{suffix}\n2:00 End"
+    result = parse_description_chapters(text, mode=mode, strict=True)
+    assert [(c.start, c.title, c.url) for c in result.chapters] == [
+        (0, "Intro <b", None),
+        (60, f"Video {url}{suffix}", url),
+        (120, "End", None),
+    ]
+
+
+@pytest.mark.parametrize("prefix", ["?v", "path/v", "x@y"])
+def test_invalid_attribute_names_recover_chapters(prefix):
+    result = parse_description_chapters(
+        f"0:00 Intro <span\n1:00 Video {prefix}=abc\n2:00 End >"
+    )
+    assert [c.start for c in result.chapters] == [0, 60, 120]
+    assert result.chapters[1].title == f"Video {prefix}=abc"
+
+
+@pytest.mark.parametrize("padding", ["", " ", "\t", "\f"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_tag_terminator_on_next_line_retains_anchor(newline, padding):
+    result = parse_description_chapters(
+        f'0:00 Previous\n<a href="https://e.com/1"{newline}'
+        f"{padding}>1:00 Intro</a>\n2:00 End",
+        strict=True,
+    )
+    assert [(c.start, c.title, c.url) for c in result.chapters] == [
+        (0, "Previous", None),
+        (60, "Intro", "https://e.com/1"),
+        (120, "End", None),
+    ]
+
+
+@pytest.mark.parametrize("name", ["_flag", ":flag", "data-value", "xml:lang"])
+def test_identifier_attribute_assignments_remain_inside_tags(name):
+    text = f'<custom\n0:00 disabled {name}="y>z">hidden</custom>\n1:00 Intro\n2:00 End'
+    assert [c.title for c in parse_description_chapters(text).chapters] == [
+        "Intro",
+        "End",
+    ]
+
+
+def test_ambiguous_equals_text_retains_attribute_interpretation():
+    text = "0:00 Intro <b\n1:00 Show x=y -> more\n2:00 End"
+    assert [c.start for c in parse_description_chapters(text).chapters] == [0, 120]
+
+
+@pytest.mark.parametrize("tag", ["script", "style"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_unfinished_raw_closing_tags_release_description_chapters(tag, newline):
+    text = f"<{tag}>a<b</{tag.upper()}{newline}0:00 Intro\n1:00 Next\n2:00 End"
+    assert [
+        c.title for c in parse_description_chapters(text, strict=True).chapters
+    ] == [
+        "Intro",
+        "Next",
+        "End",
+    ]
+    assert strip_html(text) == ""
+
+
+@pytest.mark.parametrize("tag", ["script", "style"])
+def test_raw_closing_tag_attribute_continuations_remain_hidden(tag):
+    text = f'<{tag}>hidden</{tag}\n0:00 attr="y">\n1:00 Intro\n2:00 End'
+    assert [c.start for c in parse_description_chapters(text).chapters] == [60, 120]
+    quoted = f'<{tag}>hidden</{tag} attr="\n0:00 Hidden">\n1:00 Intro\n2:00 End'
+    assert [c.start for c in parse_description_chapters(quoted).chapters] == [60, 120]
+
+
+def test_repeated_raw_tags_keep_self_closing_and_raw_states_separate():
+    text = (
+        "<script/><style/><script x=/>if(a<b){};</script>"
+        "<style/>0:00 Intro\n<style>a<b</style>1:00 End"
+    )
+    assert [c.title for c in parse_description_chapters(text).chapters] == [
+        "Intro",
+        "End",
+    ]
+
+
 @pytest.mark.parametrize(
     "continuation", ["1:00 Next", '1:00 Intro "alt=y"', "1:00 Intro alt=>"]
 )
