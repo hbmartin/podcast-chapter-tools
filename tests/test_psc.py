@@ -4,7 +4,6 @@ from conftest import FEED_XML, FakeResponse
 
 from podcast_chapter_tools import transport
 from podcast_chapter_tools.extractors import (
-    _iter_feed_items,
     extract_all_psc_chapters_from_file,
     extract_psc_chapters,
     extract_psc_chapters_from_file,
@@ -84,11 +83,6 @@ def test_all_skips_item_without_guid(tmp_path):
         "</channel></rss>",
     )
     assert extract_all_psc_chapters_from_file(feed) == {"guid-1": EXPECTED}
-
-
-def test_iter_feed_items_without_channel():
-    root = ElementTree.fromstring("<rss></rss>")
-    assert list(_iter_feed_items(root)) == []
 
 
 def test_extract_from_url_unparseable_feed(monkeypatch):

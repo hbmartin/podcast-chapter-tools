@@ -3,7 +3,8 @@
 import hashlib
 import json
 import os
-import tempfile
+import secrets
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,12 @@ import httpx2
 from loguru import logger
 
 from .entities import ChapterParseResult
-from .errors import ChapterHTTPError, ChapterParseError, ChapterTransportError
+from .errors import (
+    ChapterHTTPError,
+    ChapterParseError,
+    ChapterTransportError,
+    _validate_result,
+)
 from .parsers import parse_pci_chapters
 
 DEFAULT_TIMEOUT = 30.0
@@ -71,10 +77,16 @@ def _read_archive(
 def _atomic_write(path: Path, raw: bytes) -> None:
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=f".{path.name}.", delete=False
-        ) as file:
-            temporary = Path(file.name)
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            mode = None
+        candidate = path.with_name(f".{path.name}.{secrets.token_hex(8)}")
+        descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        temporary = candidate
+        with os.fdopen(descriptor, "wb") as file:
+            if mode is not None:
+                temporary.chmod(mode)
             file.write(raw)
             file.flush()
             os.fsync(file.fileno())
@@ -117,10 +129,7 @@ def fetch_pci_chapters(  # noqa: PLR0913 - Retain the legacy arguments plus vali
             except ChapterParseError:
                 pass
             else:
-                if strict and result.issues:
-                    msg = "Invalid chapter entries"
-                    raise ChapterParseError(msg, issues=result.issues, source=url)
-                return result
+                return _validate_result(result, strict=strict)
     response = get_response(url, headers, timeout)
     try:
         document = response.json()

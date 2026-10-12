@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from xml.etree import ElementTree
 
@@ -13,7 +14,7 @@ from .entities import (
     ChapterIssue,
     ChapterParseResult,
 )
-from .errors import ChapterParseError
+from .errors import ChapterParseError, _validate_result
 from .timecodes import parse_timestamp
 
 
@@ -55,10 +56,11 @@ def _finish(  # noqa: PLR0913 - Shared result/context validation.
     source: str | None,
     guid: str | None,
 ) -> ChapterParseResult:
-    if (strict and issues) or (nonempty and not chapters):
-        msg = "Invalid chapter entries"
-        raise ChapterParseError(msg, issues=tuple(issues), source=source, guid=guid)
-    return ChapterParseResult(tuple(chapters), tuple(issues), source, guid)
+    return _validate_result(
+        ChapterParseResult(tuple(chapters), tuple(issues), source, guid),
+        strict=strict,
+        unusable=nonempty and not chapters,
+    )
 
 
 def parse_pci_chapters(
@@ -191,6 +193,19 @@ def parse_psc_chapters(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ParseFailure:
+    message: str
+    issues: tuple[ChapterIssue, ...]
+    source: str | None
+    guid: str | None
+
+    def exception(self) -> ChapterParseError:
+        return ChapterParseError(
+            self.message, issues=self.issues, source=self.source, guid=self.guid
+        )
+
+
 class FeedChapterIndex:
     """One parsed RSS feed; repeated GUID lookups reuse parsed chapter results."""
 
@@ -202,7 +217,7 @@ class FeedChapterIndex:
         issues: tuple[ChapterIssue, ...],
     ) -> None:
         self._items = items
-        self._psc: dict[str, ChapterParseResult | ChapterParseError] = {}
+        self._psc: dict[str, ChapterParseResult | _ParseFailure] = {}
         self.source = source
         self.issues = issues
 
@@ -229,19 +244,13 @@ class FeedChapterIndex:
                         element, source=self.source, guid=guid
                     )
                 except ChapterParseError as exc:
-                    self._psc[guid] = exc
+                    self._psc[guid] = _ParseFailure(
+                        exc.message, exc.issues, exc.source, exc.guid
+                    )
         result = self._psc[guid]
-        if isinstance(result, ChapterParseError):
-            raise result
-        if strict and result.issues:
-            msg = "Invalid chapter entries"
-            raise ChapterParseError(
-                msg,
-                issues=result.issues,
-                source=self.source,
-                guid=guid,
-            )
-        return result
+        if isinstance(result, _ParseFailure):
+            raise result.exception()
+        return _validate_result(result, strict=strict)
 
     def pci_url_for_guid(self, guid: str) -> str | None:
         """Find PCI declarations, preferring the canonical namespace URI."""
@@ -260,7 +269,7 @@ def parse_feed_chapters(
     """Parse an RSS feed once into a GUID index, without fetching or reading files."""
     try:
         root = ElementTree.fromstring(xml)
-    except (ElementTree.ParseError, ValueError) as exc:
+    except (ElementTree.ParseError, ValueError, LookupError) as exc:
         msg = "Invalid feed XML"
         raise ChapterParseError(msg, source=source) from exc
     channel = root.find("./channel")

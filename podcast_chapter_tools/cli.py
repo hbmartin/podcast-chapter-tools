@@ -18,9 +18,14 @@ from loguru import logger
 from .description import parse_description_chapters
 from .entities import ChapterData, ChapterParseResult
 from .errors import ChapterFetchError, ChapterParseError
-from .extractors import _log_result, fetch_pci_chapters
+from .extractors import (
+    _fetch_feed_index,
+    _log_result,
+    _read_feed_index,
+    fetch_pci_chapters,
+)
 from .normalize import normalize_chapter_data
-from .parsers import parse_feed_chapters, parse_pci_chapters
+from .parsers import parse_pci_chapters
 from .writers import (
     chapters_to_description,
     chapters_to_pci_json,
@@ -83,19 +88,16 @@ def _build_parser() -> argparse.ArgumentParser:
 def _extract(args: argparse.Namespace) -> ChapterParseResult | None:
     if args.command == "from-description":
         return parse_description_chapters(
-            args.file.read_text(encoding="utf-8"),
+            args.file.read_text(encoding="utf-8-sig"),
             strip_html=args.strip_html,
             mode=args.description_mode,
             source=str(args.file),
         )
     if args.command == "from-psc":
         if args.feed.startswith(("http://", "https://")):
-            from .transport import get_response  # noqa: PLC0415
-
-            xml = get_response(args.feed).content
+            index = _fetch_feed_index(args.feed)
         else:
-            xml = Path(args.feed).read_bytes()
-        index = parse_feed_chapters(xml, source=args.feed)
+            index = _read_feed_index(Path(args.feed))
         _log_result(ChapterParseResult(issues=index.issues, source=index.source))
         return index.psc_for_guid(args.guid)
     if args.command == "from-pci":

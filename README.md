@@ -93,6 +93,7 @@ in strict validation. PSC requires both start and title. `parse_timestamp()` and
 from podcast_chapter_tools import parse_description_chapters
 
 result = parse_description_chapters("0:00 Intro\n2:30 Interview (part 1)\n")
+listed = parse_description_chapters("Chapters: 0:00: Intro\n1. 2:30. Interview\n")
 # Strict line recognition is the default, after HTML block/<br> normalization.
 inline = parse_description_chapters(
     "<p>0:00 Intro 5:00 Main 10:00 End</p>",
@@ -102,11 +103,27 @@ inline = parse_description_chapters(
 
 At least two usable chapters are required. Strict recognition (`mode="strict"`)
 accepts timestamps at the beginning of normalized lines, including bracketed
-timestamps and ASCII/en/em-dash separators. Lenient recognition explicitly allows
-inline timestamp layouts and can interpret incidental prose as chapters.
+timestamps and ASCII/en/em-dash separators. Optional prefixes include a blockquote
+`>`, a case-insensitive `Chapters:` label, and bullets (`-`, `*`, `+`, `•`) or
+numbered markers (`1.` and `1)`) followed by whitespace. Leading BOM and zero-width
+space characters are ignored during recognition, but characters inside titles are
+preserved. The CLI accepts UTF-8 files with or without a BOM.
+
+A single trailing `:` or `.` followed by whitespace, a closing bracket, or
+end-of-line is a timestamp delimiter: `0:00: Intro` and `0:00. Intro` both work.
+Decimal fractions such as `0:00.25` are retained. Lenient recognition explicitly
+allows inline timestamp layouts and can interpret incidental prose as chapters;
+prose mentions without a following title, such as `at 1:00.`, are ignored.
+Explicit chapter lines without titles still produce validation diagnostics.
 Parentheses/brackets in titles are preserved. Inline title markup and links are
 retained unless `strip_html=True`. Timestamps in HTML attributes, comments, scripts,
 and styles are ignored. Both modes use bounded forward scanning.
+
+Arbitrary HTML tag names and multiline attributes remain supported. An unfinished
+tag that encounters an unquoted newline followed by a chapter-line prefix becomes
+literal text, preserving subsequent chapters. Same-line text that forms valid HTML
+continues to be interpreted as markup. Script/style comparisons do not prevent
+their closing tags from restoring chapter recognition.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -133,7 +150,10 @@ for guid in index.guids:
 Feed parsing performs no I/O. Malformed XML/no RSS channel raises
 `ChapterParseError`; malformed chapter lists fail only their own episode lookup.
 Missing GUIDs or chapter declarations return an empty result. Repeated GUIDs keep
-the first episode and are reported through `index.issues`. Both the canonical
+the first episode and are reported through `index.issues`, even when that episode
+has no chapters and a later duplicate does. This policy also applies to legacy
+bulk extraction, which previously allowed later chapter-bearing duplicates to win.
+Both the canonical
 PodcastIndex namespace and its specified GitHub documentation alias are recognized;
 the canonical declaration takes precedence. Namespace prefixes do not matter.
 
@@ -141,6 +161,11 @@ For file-based bulk ingestion, `extract_all_psc_chapters_from_file(feed)` reads 
 parses once and returns legacy chapters keyed by GUID. Repeated calls to the
 single-GUID file/URL wrappers still read/fetch the feed each time; use the reusable
 index or bulk function for a batch.
+
+Feed files and HTTP responses without an explicit charset are parsed as bytes,
+respecting XML declarations and BOMs. An explicit HTTP `Content-Type` charset takes
+precedence over an XML declaration and is decoded strictly. Unknown codecs and
+invalid encoded data produce `ChapterParseError`; legacy helpers return `None`.
 
 ### Fetching and archives
 
@@ -169,6 +194,10 @@ except ChapterParseError as error:
 
 HTTP failures preserve status and the raw `Retry-After` header; transport and
 JSON/XML decoding failures preserve their underlying exception as `__cause__`.
+All four error types support pickling, including use in `ProcessPoolExecutor`,
+without duplicating message context. Their `message` attribute holds the
+unformatted error text. Repeated failed index lookups raise fresh exceptions while
+reusing cached failure details.
 The library makes one request per fetch, follows redirects, and performs no retry
 or negative caching. Consumers choose backoff and cache lifetimes. `httpx2` remains
 a required dependency in 1.0.0; an HTTP extra is deferred.
@@ -179,6 +208,9 @@ mismatches, missing/invalid metadata, corruption, or unusable documents trigger 
 refetch. Writes use temporary files and atomic replacement; failed writes do not
 discard a successfully fetched result. A mismatched/interrupted file pair cannot
 serve unverified content. Only documents that parse successfully are cached.
+Replacement preserves each existing file's permissions. New archives and sidecars
+use mode `0666` subject to the process umask (usually `0644` under umask `022`).
+Existing owner-only files are not automatically made readable by other users.
 
 Old raw archives require an initial online refetch. For explicitly trusted offline
 archives without a metadata sidecar, pass `trust_legacy_archive=True`. Existing
@@ -199,11 +231,17 @@ Legacy conversion truncates starts to whole seconds, represents absent titles as
 those markers. `result.to_legacy()` provides the same explicit conversion.
 
 Writers accept `ChapterData`, `Chapter`, and legacy four-field tuples. PCI writers
-retain optional titles, fractions, end boundaries, and silent markers. PSC and
+retain optional titles, fractions, end boundaries, and silent markers. Integral
+`startTime` and `endTime` values are serialized as JSON integers. PSC and
 description writers omit silent markers and cannot preserve PCI end boundaries;
 missing titles become empty strings. Prefer PCI for preserving rich metadata.
 `normalize_chapter_data()` retains metadata, while `normalize_chapters()` keeps its
 legacy return contract. ID3 extraction remains available with the `[id3]` extra.
+
+HTML stripping follows visible text rather than inserting spaces at every inline
+tag: `Part<b>One</b>` becomes `PartOne`, and `pod<b>cast</b>` becomes `podcast`.
+This changes the pre-1.0 `strip_html()` and title-normalization behavior; block
+tags still establish spaces or line boundaries.
 
 The library disables its Loguru output by default. Enable it in an application
 with `logger.enable("podcast_chapter_tools")`; configure handlers in the application.
