@@ -232,6 +232,33 @@ runs on Python 3.13 and 3.14 with `continue-on-error: true`. A score below
 advisory findings are shown without affecting the score. Review the findings
 and checker behavior before upgrading it or making the job blocking.
 
+[Garuff](https://github.com/gahjelle/garuff) is also being evaluated in a separate,
+non-blocking CI job. It requires Python 3.14 or newer, so it lives in an opt-in
+dependency group rather than the default development environment:
+
+```bash
+uv run --locked --only-group garuff --python 3.14 garuff check .
+uv run --locked --only-group garuff --python 3.14 garuff rule --all
+```
+
+The checker is pinned to commit `7d126c00f13b4d94f39f1107934089241ab7a6a1`
+in `pyproject.toml` and `uv.lock` because upstream has no packaged release yet.
+CI keeps the full findings, explanations, and errors in the job logs and summary.
+All default rules remain enabled across the library, tests, and experimental
+scripts; no automatic fixes are applied. A nonzero checker exit fails its step
+but is tolerated by the experimental job, including installation or checker errors.
+
+The initial evaluation found 195 style violations: 146 missing function docstrings
+(`GAC010`), 37 functions with multiple positional parameters (`GAC008`), and 12
+docstrings using double backticks (`GAC004`). Of those findings, 140 are in tests,
+34 in the library, and 21 in experimental scripts. These preferences need review
+before enforcement: tests already omit docstrings by convention, double backticks
+are valid reStructuredText, and adding keyword-only parameters to public functions
+would break existing positional callers. Review findings and Python 3.13
+compatibility before applying fixes, updating the pin, or making this job blocking.
+Repeated Python 3.14 runs produced identical reports without crashes; rule
+explanations and the missing-path error diagnostic also worked as expected.
+
 The `ai/` directory contains experimental scripts for generating chapters
 from transcripts with LLMs; its dependencies live in `ai/requirements.txt`
 and are not part of the published package.
