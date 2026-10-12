@@ -105,25 +105,33 @@ At least two usable chapters are required. Strict recognition (`mode="strict"`)
 accepts timestamps at the beginning of normalized lines, including bracketed
 timestamps and ASCII/en/em-dash separators. Optional prefixes include a blockquote
 `>`, a case-insensitive `Chapters:` label, and bullets (`-`, `*`, `+`, `•`) or
-numbered markers (`1.` and `1)`) followed by whitespace. Leading BOM and zero-width
-space characters are ignored during recognition, but characters inside titles are
-preserved. The CLI accepts UTF-8 files with or without a BOM.
+numbered markers (`1.` and `1)`) followed by whitespace. Leading Unicode format
+characters (category `Cf`, including BOM and zero-width marks) are ignored during
+recognition, but characters inside titles are preserved. The description and PCI
+CLI commands accept UTF-8 files with or without a BOM.
 
-A single trailing `:` or `.` followed by whitespace, a closing bracket, or
-end-of-line is a timestamp delimiter: `0:00: Intro` and `0:00. Intro` both work.
+A single trailing `:` or `.` followed by whitespace, a closing bracket, a dash
+separator, or end-of-line is a timestamp delimiter: `0:00: Intro`, `0:00. Intro`,
+and `0:00:- Intro` all work.
 Decimal fractions such as `0:00.25` are retained. Lenient recognition explicitly
 allows inline timestamp layouts and can interpret incidental prose as chapters;
-prose mentions without a following title, such as `at 1:00.`, are ignored.
+prose mentions without a following title, such as `at 1:00.` or `at 12:75`, are
+ignored before timestamp validation.
 Explicit chapter lines without titles still produce validation diagnostics.
 Parentheses/brackets in titles are preserved. Inline title markup and links are
 retained unless `strip_html=True`. Timestamps in HTML attributes, comments, scripts,
 and styles are ignored. Both modes use bounded forward scanning.
 
-Arbitrary HTML tag names and multiline attributes remain supported. An unfinished
-tag that encounters an unquoted newline followed by a chapter-line prefix becomes
-literal text, preserving subsequent chapters. Same-line text that forms valid HTML
-continues to be interpreted as markup. Script/style comparisons do not prevent
-their closing tags from restoring chapter recognition.
+Arbitrary HTML tag names and multiline attributes remain supported. Description
+extraction recovers an unquoted newline followed by a chapter-line prefix unless
+that continuation line contains an attribute assignment such as `alt="y"`.
+Timestamp-like boolean attributes alone are ambiguous and recover as chapter
+boundaries. Generic `strip_html()` does not apply chapter-boundary recovery.
+Recovered fragments stay literal: retained titles can contain text such as
+`Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
+valid HTML continues to be interpreted as markup. Script/style names use ASCII
+case matching; comparisons in their contents do not hide matching closing tags,
+including tolerated slash and attribute suffixes.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -162,10 +170,14 @@ parses once and returns legacy chapters keyed by GUID. Repeated calls to the
 single-GUID file/URL wrappers still read/fetch the feed each time; use the reusable
 index or bulk function for a batch.
 
-Feed files and HTTP responses without an explicit charset are parsed as bytes,
-respecting XML declarations and BOMs. An explicit HTTP `Content-Type` charset takes
-precedence over an XML declaration and is decoded strictly. Unknown codecs and
-invalid encoded data produce `ChapterParseError`; legacy helpers return `None`.
+Feed files are parsed as bytes, respecting XML declarations and BOMs. HTTP feeds
+use a BOM first, then an explicit `Content-Type` charset, then XML byte detection.
+If charset lookup or strict decoding fails, the adapter retries XML byte detection
+and logs successful recovery. Successfully decoded data and structural XML errors
+do not trigger fallback: an incorrect Latin-1 header can still produce garbled
+text. Common XML encodings are parsed directly from bytes; other Python codecs
+remain supported. Unrecoverable failures produce `ChapterParseError`; legacy
+helpers return `None`.
 
 ### Fetching and archives
 
@@ -194,8 +206,10 @@ except ChapterParseError as error:
 
 HTTP failures preserve status and the raw `Retry-After` header; transport and
 JSON/XML decoding failures preserve their underlying exception as `__cause__`.
-All four error types support pickling, including use in `ProcessPoolExecutor`,
-without duplicating message context. Their `message` attribute holds the
+All four error types and subclasses with custom constructors support pickling,
+including use in `ProcessPoolExecutor`, without duplicating message context.
+Reconstruction preserves arguments, attributes, notes, and declared slots without
+calling subclass constructors. Their `message` attribute holds the
 unformatted error text. Repeated failed index lookups raise fresh exceptions while
 reusing cached failure details.
 The library makes one request per fetch, follows redirects, and performs no retry

@@ -180,3 +180,132 @@ assert peak < 64 * 1024 * 1024, peak
     subprocess.run(  # noqa: S603 - fixed memory regression in an isolated interpreter.
         [sys.executable, "-c", code], check=True, capture_output=True, timeout=30
     )
+
+
+@pytest.mark.parametrize(
+    "tag", ["scr\u0131pt", "scr\u0130pt", "\u017fcript", "\u017ftyle"]
+)
+def test_unicode_raw_tag_lookalikes_do_not_crash(tag, tmp_path, capsys):
+    text = f"<{tag}>hidden</{tag}>\n0:00 Intro\n1:00 End"
+    assert [c.title for c in parse_description_chapters(text).chapters] == [
+        "Intro",
+        "End",
+    ]
+    assert "End" in strip_html(text)
+    path = tmp_path / "notes.txt"
+    path.write_text(text, encoding="utf-8")
+    assert main(["from-description", str(path)]) == 0
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("tag", ["script", "style"])
+@pytest.mark.parametrize("suffix", ["/>", " foo>", ' foo=">">', '\nfoo="x">'])
+def test_raw_closing_tag_suffixes_restore_chapters(tag, suffix):
+    text = f"<{tag}>if (a<b) go();</{tag.upper()}{suffix}\n0:00 Intro\n1:00 End"
+    assert [c.title for c in parse_description_chapters(text).chapters] == [
+        "Intro",
+        "End",
+    ]
+    assert strip_html(text) == "0:00 Intro 1:00 End"
+
+
+@pytest.mark.parametrize("tag", ["script", "style"])
+def test_raw_attribute_slash_is_not_a_self_closing_marker(tag):
+    assert (
+        len(
+            parse_description_chapters(
+                f"<{tag} x=/>if (a<b) go();</{tag}>\n0:00 Intro\n1:00 End"
+            ).chapters
+        )
+        == 2
+    )
+    assert not parse_description_chapters(f"<{tag} x=/>\n0:00 Intro\n1:00 End").chapters
+    assert (
+        len(parse_description_chapters(f"<{tag}/>\n0:00 Intro\n1:00 End").chapters) == 2
+    )
+    assert not parse_description_chapters(
+        f"<{tag}>hidden</{tag}\xa0>\n0:00 Intro\n1:00 End"
+    ).chapters
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        '0:00 alt="y"',
+        "0:00 disabled alt = y",
+        '0:00 alt="\n2:00 hidden"',
+        '0:00 alt =\n"y"',
+    ],
+)
+def test_timestamp_like_attribute_continuations_stay_in_tags(continuation):
+    text = f'<img src="x"\n{continuation}>\n1:00 Intro\n2:00 End'
+    result = parse_description_chapters(text, mode="lenient", strict=True)
+    assert [(c.start, c.title) for c in result.chapters] == [
+        (60, "Intro"),
+        (120, "End"),
+    ]
+
+
+def test_generic_stripping_does_not_recover_chapter_boundaries():
+    assert strip_html("Call me at <a\n9:30 href=x>here</a>") == "Call me at here"
+    assert strip_html("Call me at <a\n9:30 disabled>here</a>") == "Call me at here"
+
+
+@pytest.mark.parametrize(
+    "continuation", ["1:00 Next", '1:00 Intro "alt=y"', "1:00 Intro alt=>"]
+)
+def test_ambiguous_boolean_attributes_recover_chapters(continuation):
+    text = f"0:00 Intro <span\n{continuation}\n2:00 End >"
+    assert len(parse_description_chapters(text).chapters) == 3
+    assert parse_description_chapters(text).chapters[0].title == "Intro <span"
+
+
+@pytest.mark.parametrize("mode", ["strict", "lenient"])
+@pytest.mark.parametrize(
+    "separator", [":-", ":\u2013", ":\u2014", ".-", ".\u2013", ".\u2014"]
+)
+def test_timestamp_punctuation_before_dash_separators(mode, separator):
+    result = parse_description_chapters(
+        f"0:00{separator} Intro\n0:01.25-End", mode=mode, strict=True
+    )
+    assert [(c.start, c.title) for c in result.chapters] == [
+        (0, "Intro"),
+        (1.25, "End"),
+    ]
+    result = parse_description_chapters(
+        f"0:99{separator} Invalid\n0:00 Intro\n1:00 End", mode=mode
+    )
+    assert [i.code for i in result.issues] == ["invalid_start"]
+
+
+@pytest.mark.parametrize("token", ["12:30", "12:75", "12:75.", "12:30::"])
+def test_titleless_lenient_prose_is_ignored_before_validation(token):
+    result = parse_description_chapters(
+        f"Discussed at {token}\n0:00 Intro\n1:00 End", mode="lenient", strict=True
+    )
+    assert not result.issues
+    assert len(result.chapters) == 2
+    with pytest.raises(ChapterParseError):
+        parse_description_chapters(
+            f"{token}\n0:00 Intro\n1:00 End", mode="lenient", strict=True
+        )
+
+
+@pytest.mark.parametrize(
+    "mark", ["\u200c", "\u200d", "\u200e", "\u200f", "\u2060", "\u00ad", "\U000e0001"]
+)
+@pytest.mark.parametrize("mode", ["strict", "lenient"])
+def test_all_leading_format_marks_preserve_title_characters(mark, mode):
+    result = parse_description_chapters(
+        f"{mark}0:00 <b>In{mark}tro</b>\n{mark}1:00 End", mode=mode, strict=True
+    )
+    assert [c.title for c in result.chapters] == [f"<b>In{mark}tro</b>", "End"]
+
+
+def test_cli_pci_accepts_utf8_bom(tmp_path, capsys):
+    path = tmp_path / "chapters.json"
+    path.write_text(
+        '{"chapters":[{"startTime":0,"title":"Intro"}]}', encoding="utf-8-sig"
+    )
+    assert main(["from-pci", str(path), "--to", "description"]) == 0
+    assert capsys.readouterr().out == "0:00 Intro\n"

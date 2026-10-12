@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import traceback
 from unittest.mock import Mock
 
@@ -9,12 +11,14 @@ from podcast_chapter_tools import (
     extract_all_psc_chapters_from_file,
     extract_psc_chapters_from_file,
     extract_psc_chapters_from_url,
+    extractors,
     find_pci_chapters_url,
     parse_feed_chapters,
     parsers,
     transport,
 )
 from podcast_chapter_tools.cli import main
+from podcast_chapter_tools.extractors import _fetch_feed_index
 
 URL = "https://example.com/feed.xml"
 FEED = '<rss xmlns:psc="http://podlove.org/simple-chapters"><channel><item><guid>g</guid><psc:chapters><psc:chapter start="0:00" title="Café"/></psc:chapters></item></channel></rss>'
@@ -119,3 +123,146 @@ def test_duplicate_without_chapters_keeps_first_episode_in_all_adapters(
         transport.httpx2, "get", Mock(return_value=httpx2.Response(200, text=xml))
     )
     assert extract_psc_chapters_from_url(URL, "g") is None
+
+
+@pytest.mark.parametrize("charset", ["binary", "unknown-codec", "us-ascii"])
+def test_invalid_http_encoding_falls_back_to_xml_bytes(charset, monkeypatch, capsys):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": f"application/xml; charset={charset}"},
+        content=('<?xml version="1.0" encoding="UTF-8"?>' + FEED).encode(),
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    warning = Mock()
+    monkeypatch.setattr(extractors.logger, "warning", warning)
+    result = _fetch_feed_index(URL).psc_for_guid("g", strict=True)
+    assert result.chapters[0].title == "Café"
+    assert not result.issues
+    warning.assert_called_once()
+    assert extract_psc_chapters_from_url(URL, "g")[0].title == "Café"
+    assert main(["from-psc", URL, "--guid", "g", "--to", "description"]) == 0
+    assert capsys.readouterr().out == "0:00 Café\n"
+
+
+def test_successful_wrong_charset_does_not_trigger_fallback(monkeypatch):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": "application/xml; charset=iso-8859-1"},
+        content=('<?xml version="1.0" encoding="UTF-8"?>' + FEED).encode(),
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    assert _fetch_feed_index(URL).psc_for_guid("g").chapters[0].title == "CafÃ©"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32"])
+def test_http_bom_overrides_header_and_declaration(encoding, monkeypatch):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": "application/xml; charset=us-ascii"},
+        content=('<?xml version="1.0" encoding="iso-8859-1"?>' + FEED).encode(encoding),
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    assert _fetch_feed_index(URL).psc_for_guid("g").chapters[0].title == "Café"
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-be", "utf-32-be"])
+def test_big_endian_http_bom_overrides_unknown_charset(encoding, monkeypatch):
+    import codecs  # noqa: PLC0415 - BOM fixture helper.
+
+    bom = codecs.BOM_UTF16_BE if encoding == "utf-16-be" else codecs.BOM_UTF32_BE
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": "application/xml; charset=binary"},
+        content=bom + FEED.encode(encoding),
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    assert _fetch_feed_index(URL).psc_for_guid("g").chapters[0].title == "Café"
+
+
+def test_invalid_bom_encoding_stays_authoritative_and_typed(monkeypatch):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": "application/xml; charset=iso-8859-1"},
+        content=b"\xff\xfea",
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    with pytest.raises(ChapterParseError) as caught:
+        _fetch_feed_index(URL)
+    assert isinstance(caught.value.__cause__, UnicodeError)
+    assert extract_psc_chapters_from_url(URL, "g") is None
+
+
+@pytest.mark.parametrize(
+    ("charset", "title"), [("windows-1252", "Café"), ("shift_jis", "日本語")]
+)
+def test_non_native_http_codecs_keep_python_decoder_support(
+    charset, title, monkeypatch
+):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": f"application/xml; charset={charset}"},
+        content=(
+            '<?xml version="1.0" encoding="UTF-8"?>' + FEED.replace("Café", title)
+        ).encode(charset),
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    assert _fetch_feed_index(URL).psc_for_guid("g").chapters[0].title == title
+
+
+@pytest.mark.parametrize("charset", ["utf-8", "shift_jis"])
+def test_structural_xml_failure_does_not_retry(charset, monkeypatch):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": f"application/xml; charset={charset}"},
+        content=b"<rss><channel></rss>",
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    parse = Mock(wraps=parsers.ElementTree.fromstring)
+    monkeypatch.setattr(parsers.ElementTree, "fromstring", parse)
+    with pytest.raises(ChapterParseError) as caught:
+        _fetch_feed_index(URL)
+    assert caught.value.source == URL
+    assert isinstance(caught.value.__cause__, parsers.ElementTree.ParseError)
+    assert parse.call_count == 1
+
+
+@pytest.mark.parametrize("charset", ["binary", "us-ascii"])
+def test_failed_charset_fallback_retains_typed_contract(charset, monkeypatch, capsys):
+    response = httpx2.Response(
+        200,
+        headers={"Content-Type": f"application/xml; charset={charset}"},
+        content=b"\xff",
+    )
+    monkeypatch.setattr(transport.httpx2, "get", Mock(return_value=response))
+    with pytest.raises(ChapterParseError) as caught:
+        _fetch_feed_index(URL)
+    assert caught.value.source == URL
+    assert isinstance(caught.value.__cause__, (LookupError, UnicodeError))
+    assert caught.value.__notes__
+    assert extract_psc_chapters_from_url(URL, "g") is None
+    assert main(["from-psc", URL, "--guid", "g"]) == 1
+    assert "ChapterParseError" in capsys.readouterr().err
+
+
+def test_native_feed_encoding_avoids_full_string_allocation():
+    code = """
+import tracemalloc
+from unittest.mock import Mock
+import httpx2
+from podcast_chapter_tools import parse_feed_chapters, transport
+from podcast_chapter_tools.extractors import _fetch_feed_index
+raw = ('<rss><channel><description>' + 'x' * (5 * 1024 * 1024) + '</description></channel></rss>').encode()
+transport.httpx2.get = Mock(return_value=httpx2.Response(200, headers={'Content-Type': 'application/xml; charset=iso-8859-1'}, content=raw))
+peaks = []
+for parse in (lambda: _fetch_feed_index('https://example.com'), lambda: parse_feed_chapters(raw.decode('iso-8859-1'))):
+    tracemalloc.start()
+    result = parse()
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    peaks.append(peak)
+    del result
+assert peaks[0] + 3 * 1024 * 1024 < peaks[1], peaks
+"""
+    subprocess.run(  # noqa: S603 - isolated allocation regression with fixed code.
+        [sys.executable, "-c", code], check=True, capture_output=True, timeout=30
+    )

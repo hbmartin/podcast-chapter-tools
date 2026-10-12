@@ -107,7 +107,7 @@ def _extract(args: argparse.Namespace) -> ChapterParseResult | None:
         if args.source.startswith(("http://", "https://")):
             return fetch_pci_chapters(args.source)
         return parse_pci_chapters(
-            json.loads(Path(args.source).read_text(encoding="utf-8")),
+            json.loads(Path(args.source).read_text(encoding="utf-8-sig")),
             source=args.source,
         )
     if args.command == "from-id3":

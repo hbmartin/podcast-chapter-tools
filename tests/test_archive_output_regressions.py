@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import stat
@@ -14,6 +15,7 @@ from podcast_chapter_tools import (
     fetch_pci_chapters,
     transport,
 )
+from podcast_chapter_tools.transport import _atomic_write
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits and umask")
@@ -91,3 +93,83 @@ def test_integral_pci_times_use_json_integers_without_losing_fractions():
     assert second["endTime"] == 3722.5
     assert type(second["startTime"]) is float
     assert type(second["endTime"]) is float
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_atomic_write_skips_unnecessary_permission_changes(tmp_path, monkeypatch):
+    path = tmp_path / "chapters.json"
+    path.write_bytes(b"old")
+    path.chmod(0o600)
+    chmod = Mock(side_effect=PermissionError(errno.EPERM, "unsupported"))
+    monkeypatch.setattr(type(path), "chmod", chmod)
+    monkeypatch.setattr(transport.os, "fchmod", chmod)
+    _atomic_write(path, b"new")
+    assert path.read_bytes() == b"new"
+    chmod.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor permissions")
+def test_atomic_write_corrects_permissions_by_descriptor(tmp_path, monkeypatch):
+    path = tmp_path / "chapters.json"
+    path.write_bytes(b"old")
+    path.chmod(0o640)
+    real_open = os.open
+    real_chmod = os.fchmod
+
+    def restrictive_open(path, flags, mode):
+        return real_open(path, flags, mode & 0o600)
+
+    chmod = Mock(wraps=real_chmod)
+    monkeypatch.setattr(transport.os, "open", restrictive_open)
+    monkeypatch.setattr(transport.os, "fchmod", chmod)
+    _atomic_write(path, b"new")
+    assert path.read_bytes() == b"new"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    chmod.assert_called_once()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor permissions")
+@pytest.mark.parametrize("error", [errno.EPERM, errno.EOPNOTSUPP])
+@pytest.mark.parametrize("matches_after_error", [True, False])
+def test_permission_errors_require_matching_actual_mode(
+    tmp_path, monkeypatch, error, matches_after_error
+):
+    path = tmp_path / "chapters.json"
+    path.write_bytes(b"old")
+    path.chmod(0o640)
+    real_open = os.open
+    real_chmod = os.fchmod
+
+    def restrictive_open(path, flags, mode):
+        return real_open(path, flags, mode & 0o600)
+
+    def unsupported_chmod(descriptor, mode):
+        if matches_after_error:
+            real_chmod(descriptor, mode)
+        raise OSError(error, "unsupported")
+
+    monkeypatch.setattr(transport.os, "open", restrictive_open)
+    monkeypatch.setattr(transport.os, "fchmod", unsupported_chmod)
+    if matches_after_error:
+        _atomic_write(path, b"new")
+        assert path.read_bytes() == b"new"
+    else:
+        with pytest.raises(OSError):
+            _atomic_write(path, b"new")
+        assert path.read_bytes() == b"old"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_interrupted_flush_preserves_existing_file_and_cleans_temporary(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "chapters.json"
+    path.write_bytes(b"old")
+    monkeypatch.setattr(
+        transport.os, "fsync", Mock(side_effect=OSError(errno.EIO, "interrupted"))
+    )
+    with pytest.raises(OSError):
+        _atomic_write(path, b"new")
+    assert path.read_bytes() == b"old"
+    assert list(tmp_path.iterdir()) == [path]

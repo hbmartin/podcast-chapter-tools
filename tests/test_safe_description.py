@@ -99,6 +99,10 @@ for markup in ('<' * 100_000, '<a ' + ' ' * 100_000, '<a x="' + 'x' * 100_000):
 inline = ' '.join(f'{i // 60}:{i % 60:02} Chapter' for i in range(4000))
 result = parse_description_chapters(inline, mode='lenient')
 assert len(result.chapters) == 4000
+attributes = '<custom\\n' + '0:00 disabled alt="x"\\n' * 4000 + '>\\n0:00 Intro\\n1:00 End'
+assert len(parse_description_chapters(attributes, mode=mode).chapters) == 2
+closings = '<script>' + '</scripture>' * 100_000 + '</script foo=">">\\n0:00 Intro\\n1:00 End'
+assert len(parse_description_chapters(closings, mode=mode).chapters) == 2
 """
     subprocess.run(  # noqa: S603 - fixed test script, interpreter, and mode fixture
         [sys.executable, "-c", code, mode], check=True, timeout=5, capture_output=True

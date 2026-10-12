@@ -1,5 +1,6 @@
 """HTTP and verified archives, imported only by fetching entry points."""
 
+import errno
 import hashlib
 import json
 import os
@@ -76,6 +77,31 @@ def _read_archive(
     return None
 
 
+def _preserve_mode(descriptor: int, temporary: Path, mode: int) -> None:
+    """Set existing permissions only when needed and verify unsupported changes."""
+    if stat.S_IMODE(os.fstat(descriptor).st_mode) == mode:
+        return
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, mode)
+        else:
+            temporary.chmod(mode)
+    except (OSError, NotImplementedError) as exc:
+        if isinstance(exc, OSError) and exc.errno not in {
+            errno.EPERM,
+            errno.EACCES,
+            errno.ENOTSUP,
+            errno.EOPNOTSUPP,
+            errno.ENOSYS,
+        }:
+            raise
+        if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+            raise
+    if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+        msg = "Archive permissions could not be preserved"
+        raise PermissionError(errno.EPERM, msg, temporary)
+
+
 def _atomic_write(path: Path, raw: bytes) -> None:
     """Atomically replace file bytes while preserving existing permissions."""
     temporary = None
@@ -85,11 +111,15 @@ def _atomic_write(path: Path, raw: bytes) -> None:
         except FileNotFoundError:
             mode = None
         candidate = path.with_name(f".{path.name}.{secrets.token_hex(8)}")
-        descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        descriptor = os.open(
+            candidate,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            mode if mode is not None else 0o666,
+        )
         temporary = candidate
         with os.fdopen(descriptor, "wb") as file:
             if mode is not None:
-                temporary.chmod(mode)
+                _preserve_mode(descriptor, temporary, mode)
             file.write(raw)
             file.flush()
             os.fsync(file.fileno())

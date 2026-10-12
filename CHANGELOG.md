@@ -96,22 +96,31 @@ change as described below.
 - File and HTTP feed adapters respect XML-declared encodings.
 - Strict description recognition accepts bullets (`-`, `*`, `+`, `•`) and
   numbered markers (`1.` and `1)`) followed by whitespace, plus case-insensitive
-  leading `Chapters:` labels. Leading BOM/zero-width space characters no longer
-  drop the first chapter, and the CLI accepts UTF-8-BOM description files.
+  leading `Chapters:` labels. Leading Unicode format characters (category `Cf`)
+  no longer drop the first chapter; format characters inside titles are preserved.
+  The CLI accepts UTF-8-BOM description and PCI files.
 - Single trailing timestamp `:`/`.` delimiters no longer produce invalid-start
-  issues. Fractional starts and malformed-timestamp diagnostics are retained;
-  lenient prose mentions without titles are ignored.
-- Unfinished markup cannot consume chapter lines after an unquoted newline.
-  Arbitrary tags and multiline attributes remain supported; script/style closing
-  tags are recognized despite comparisons and quotes in their contents.
-- Feed adapters honor explicit HTTP charsets ahead of XML declarations and keep
-  XML/BOM encoding detection when no HTTP charset is supplied. Unknown XML/HTTP
-  codecs and decoding failures follow the typed parse-error contract.
+  issues, including before ASCII/en/em-dash separators. Fractional starts and
+  explicit malformed-timestamp diagnostics are retained; lenient prose mentions
+  without titles are ignored before timestamp validation.
+- Description-only recovery preserves chapter boundaries after unquoted newlines
+  while retaining continuation lines with attribute assignments. Generic HTML
+  stripping does not apply this recovery; recovered title fragments remain literal.
+  Arbitrary tags and multiline attributes remain supported. Script/style handling
+  uses ASCII names, distinguishes slash-valued attributes from self-closing tags,
+  and recognizes closing-tag suffixes despite comparisons and quotes in contents.
+- HTTP feeds prioritize BOMs, then explicit charsets, then XML byte detection.
+  Unknown charsets and decoding failures retry XML byte detection; structural XML
+  failures and successful decodes do not. Common encodings avoid full-feed string
+  copies, and unrecoverable failures follow the typed parse-error contract.
 - All chapter error types round-trip through pickle without losing context or
-  breaking process pools. Cached feed failures raise fresh exceptions instead of
-  retaining and growing traceback chains.
+  breaking process pools, including subclasses with custom constructors and slots.
+  Cached feed failures raise fresh exceptions instead of retaining and growing
+  traceback chains.
 - Atomic archive replacement preserves existing file permissions; new archives
   and sidecars follow the process umask rather than always using mode `0600`.
+  Permission changes use descriptors where supported and are skipped when modes
+  already match; unsupported changes cannot replace an archive with different modes.
 - PCI writers serialize integral starts and ends as JSON integers while retaining
   fractional values.
 
