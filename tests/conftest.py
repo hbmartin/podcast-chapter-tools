@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import httpx2
 import pytest
 
 FEED_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -60,12 +61,14 @@ def pci_json() -> dict:
     }
 
 
-class FakeResponse:
-    def __init__(self, *, is_success=True, status_code=200, json_data=None, text=""):
-        self.is_success = is_success
-        self.status_code = status_code
-        self._json_data = json_data
-        self.text = text
-
-    def json(self):
-        return self._json_data
+class FakeResponse(httpx2.Response):
+    def __init__(
+        self, *, is_success=True, status_code=200, json_data=None, text="", headers=None
+    ):
+        body = {"json": json_data} if json_data is not None else {"text": text}
+        super().__init__(
+            status_code if is_success or status_code != 200 else 500,
+            request=httpx2.Request("GET", "https://example.com"),
+            headers=headers,
+            **body,
+        )

@@ -23,7 +23,7 @@ else:
     _id3 = id3
 
 
-def extract_id3_chapters(audio_file: Path) -> None | list[Chapter]:
+def extract_id3_chapters(audio_file: Path) -> list[Chapter] | None:
     """Extract chapters from the ID3v2 CHAP frames of an MP3 file.
 
     Chapter order follows the CTOC (table of contents) frame when present,

@@ -8,7 +8,7 @@ module-root = ""
 
 [project]
 name = "podcast-chapter-tools"
-version = "0.2.0"
+version = "1.0.0"
 description = " Extract and transform podcast chapter information between PodCastIndex chapters, Podlove simple chapters, and description embeds."
 readme = "README.md"
 license = "Apache-2.0"
@@ -64,7 +64,8 @@ line-length = 88
 indent-width = 4
 
 lint.select = ["ALL"]
-lint.ignore = ["COM812", "D100", "D101", "D103", "D104", "D105", "D107", "D203", "D213", "ERA001", "FBT001", "FIX002", "ICN001", "PTH109", "S113", "S314", "S608", "SIM300", "T201", "TD002", "TD003", "UP040"]
+# Copyright is documented in LICENSE.txt instead of per-file notices (CPY001).
+lint.ignore = ["COM812", "CPY001", "D100", "D101", "D103", "D104", "D105", "D107", "D203", "D213", "ERA001", "FBT001", "FIX002", "ICN001", "PTH109", "S113", "S314", "S608", "SIM300", "T201", "TD002", "TD003", "UP040"]
 target-version = "py313"
 
 [tool.ruff.format]

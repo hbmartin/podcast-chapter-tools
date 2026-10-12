@@ -2,7 +2,7 @@ from xml.etree import ElementTree
 
 from conftest import FEED_XML, FakeResponse
 
-from podcast_chapter_tools import extractors
+from podcast_chapter_tools import transport
 from podcast_chapter_tools.extractors import (
     _iter_feed_items,
     extract_all_psc_chapters_from_file,
@@ -93,7 +93,7 @@ def test_iter_feed_items_without_channel():
 
 def test_extract_from_url_unparseable_feed(monkeypatch):
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(text="not xml at all <<<"),
     )
@@ -125,7 +125,7 @@ def test_extract_from_url(monkeypatch):
         captured["follow_redirects"] = follow_redirects
         return FakeResponse(text=FEED_XML)
 
-    monkeypatch.setattr(extractors.httpx2, "get", fake_get)
+    monkeypatch.setattr(transport.httpx2, "get", fake_get)
     chapters = extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1")
     assert chapters == EXPECTED
     assert captured["url"] == "https://example.com/feed.xml"
@@ -135,7 +135,7 @@ def test_extract_from_url(monkeypatch):
 
 def test_extract_from_url_http_error(monkeypatch):
     monkeypatch.setattr(
-        extractors.httpx2,
+        transport.httpx2,
         "get",
         lambda *a, **kw: FakeResponse(is_success=False, status_code=404),
     )
@@ -146,9 +146,9 @@ def test_extract_from_url_http_error(monkeypatch):
 
 def test_extract_from_url_request_error(monkeypatch):
     def boom(*a, **kw):
-        raise extractors.httpx2.RequestError("timeout")
+        raise transport.httpx2.RequestError("timeout")
 
-    monkeypatch.setattr(extractors.httpx2, "get", boom)
+    monkeypatch.setattr(transport.httpx2, "get", boom)
     assert (
         extract_psc_chapters_from_url("https://example.com/feed.xml", "guid-1") is None
     )

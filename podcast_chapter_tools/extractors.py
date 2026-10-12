@@ -1,304 +1,227 @@
-import json
+"""Legacy tuple extractors and lazy access to HTTP fetching."""
+
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-import httpx2
 from loguru import logger
 
-from .entities import (
-    PCI,
-    PSC,
-    Chapter,
-    _description_chapter,
-    _re_url,
-    _retry_description_chapter,
+from .description import DescriptionMode, parse_description_chapters
+from .entities import Chapter, ChapterParseResult
+from .errors import ChapterFetchError, ChapterParseError
+from .parsers import (
+    FeedChapterIndex,
+    parse_feed_chapters,
+    parse_pci_chapters,
+    parse_psc_chapters,
 )
-from .normalize import strip_html as _strip_html
 from .timecodes import ts_to_secs
 
 DEFAULT_TIMEOUT = 30.0
-
-# Backwards-compatible alias for the pre-0.2 private helper.
 _ts_to_secs = ts_to_secs
 
 
-def extract_description_chapters(
+def _log_result(result: ChapterParseResult) -> None:
+    for issue in result.issues:
+        logger.warning(
+            "Chapter issue source={} GUID={} entry={} field={} code={}: {}",
+            result.source,
+            result.guid,
+            issue.index,
+            issue.field,
+            issue.code,
+            issue.message,
+        )
+
+
+def _log_failure(exc: ChapterParseError | ChapterFetchError) -> None:
+    logger.warning("Chapter extraction failed: {}", exc)
+    if isinstance(exc, ChapterParseError):
+        _log_result(
+            ChapterParseResult(issues=exc.issues, source=exc.source, guid=exc.guid)
+        )
+
+
+def extract_description_chapters(  # noqa: PLR0913 - Backward-compatible keyword options.
     description: str,
     *,
     strip_html: bool = False,
-) -> None | list[Chapter]:
-    """Extract chapters from an episode description (plain text or HTML).
-
-    Returns ``None`` when fewer than two chapters are found, since a single
-    timestamp is more likely to be an incidental mention than a chapter list.
-    Set ``strip_html`` to remove markup from chapter titles.
-    """
-    desc_chapters = _description_chapter.findall(description)
-    chapters = _desc_matches_to_chapters(desc_chapters, strip_html=strip_html)
-    if chapters is not None:
-        return chapters
-    if len(desc_chapters) == 1:
-        retry_desc_chapters = _retry_description_chapter.findall(
-            f"{desc_chapters[0][0]} {desc_chapters[0][1]}",
-        )
-        return _desc_matches_to_chapters(retry_desc_chapters, strip_html=strip_html)
-    return None
-
-
-def _desc_matches_to_chapters(
-    matches: list[tuple[str, str]],
-    *,
-    strip_html: bool,
-) -> None | list[Chapter]:
-    if len(matches) < 2:  # noqa: PLR2004
-        return None
-    chapters = []
-    for match in matches:
-        try:
-            chapters.append(_extract_desc_ts_and_title(match, strip_html=strip_html))
-        except ValueError:
-            logger.debug("Skipping invalid chapter timestamp: {}", match[0])
-    return chapters if len(chapters) > 1 else None
-
-
-def _extract_desc_ts_and_title(
-    ts_title: tuple[str, str],
-    *,
-    strip_html: bool = False,
-) -> Chapter:
-    title = ts_title[1].strip()
-    if "<a" in title and "</a>" not in title:
-        title += "</a>"
-
-    url = m[0] if (m := _re_url.search(title)) is not None else None
-    if strip_html:
-        title = _strip_html(title)
-
-    return Chapter(ts_to_secs(ts_title[0]), title, url, None)
-
-
-def extract_pci_chapters(chapters_json: dict[str, Any]) -> None | list[Chapter]:
-    """Extract chapters from a parsed PodcastIndex chapters JSON document."""
+    mode: DescriptionMode = "strict",
+    strict: bool = False,
+    require_monotonic: bool = False,
+    require_zero_start: bool = False,
+) -> list[Chapter] | None:
+    """Extract chapter lines; opt into mode='lenient' for inline layouts."""
     try:
-        return [
-            Chapter(int(c["startTime"]), c["title"], c.get("url"), c.get("img"))
-            for c in chapters_json["chapters"]
-        ]
-    except (KeyError, ValueError, TypeError):
-        logger.warning("Failed to extract PCI chapters from JSON document")
+        result = parse_description_chapters(
+            description,
+            strip_html=strip_html,
+            mode=mode,
+            strict=strict,
+            require_monotonic=require_monotonic,
+            require_zero_start=require_zero_start,
+        )
+    except ChapterParseError as exc:
+        _log_failure(exc)
         return None
+    _log_result(result)
+    return result.to_legacy() if result.chapters else None
 
 
-def get_and_extract_pci_chapters(
+def extract_pci_chapters(
+    chapters_json: dict[str, Any],
+    *,
+    strict: bool = False,
+    include_non_toc: bool = False,
+) -> list[Chapter] | None:
+    """Extract visible legacy PCI chapters, salvaging valid entries by default."""
+    try:
+        result = parse_pci_chapters(chapters_json, strict=strict)
+    except ChapterParseError as exc:
+        _log_failure(exc)
+        return None
+    _log_result(result)
+    return result.to_legacy(include_non_toc=include_non_toc)
+
+
+def fetch_pci_chapters(  # noqa: PLR0913 - Retain legacy positional arguments.
     url: str,
-    headers: dict | None = None,
+    headers: dict[str, str] | None = None,
     archive_path_json: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> None | list[Chapter]:
-    """Fetch a PodcastIndex chapters JSON document and extract its chapters.
+    *,
+    strict: bool = False,
+    trust_legacy_archive: bool = False,
+) -> ChapterParseResult:
+    """Fetch PCI with typed failures and verified archives; HTTP imports are lazy."""
+    from .transport import fetch_pci_chapters as fetch  # noqa: PLC0415
 
-    When ``archive_path_json`` is given, the raw JSON is read from (or written
-    to) that path so repeated calls do not refetch the document.
-    """
-    if archive_path_json is not None and archive_path_json.exists():
-        try:
-            chapters_json = json.loads(archive_path_json.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            logger.warning("Failed to read archived PCI chapters {}", archive_path_json)
-            return None
-    else:
-        try:
-            response = httpx2.get(
-                url,
-                headers=headers or {},
-                timeout=timeout,
-                follow_redirects=True,
-            )
-        except httpx2.RequestError as exc:
-            logger.error("Error fetching chapters {}: {}", url, exc)
-            return None
-        if not response.is_success:
-            logger.error(
-                "Error {} fetching chapters {}",
-                response.status_code,
-                url,
-            )
-            return None
-        try:
-            chapters_json = response.json()
-        except ValueError:
-            logger.warning("Failed to decode PCI chapters JSON {}", url)
-            return None
-        if archive_path_json:
-            try:
-                archive_path_json.write_text(
-                    json.dumps(chapters_json),
-                    encoding="utf-8",
-                )
-            except OSError as exc:
-                logger.warning(
-                    "Failed to write archived PCI chapters {}: {}",
-                    archive_path_json,
-                    exc,
-                )
+    return fetch(
+        url,
+        headers,
+        archive_path_json,
+        timeout,
+        strict=strict,
+        trust_legacy_archive=trust_legacy_archive,
+    )
 
-    chapters = extract_pci_chapters(chapters_json)
-    if chapters is None:
-        logger.warning("Failed to extract PCI for {} @ {}", url, archive_path_json)
-    return chapters
+
+def get_and_extract_pci_chapters(  # noqa: PLR0913 - Retain legacy positional arguments.
+    url: str,
+    headers: dict[str, str] | None = None,
+    archive_path_json: Path | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    *,
+    strict: bool = False,
+    include_non_toc: bool = False,
+    trust_legacy_archive: bool = False,
+) -> list[Chapter] | None:
+    """Fetch visible PCI chapters, translating expected failures to None."""
+    try:
+        result = fetch_pci_chapters(
+            url,
+            headers,
+            archive_path_json,
+            timeout,
+            strict=strict,
+            trust_legacy_archive=trust_legacy_archive,
+        )
+    except (ChapterParseError, ChapterFetchError) as exc:
+        _log_failure(exc)
+        return None
+    _log_result(result)
+    return result.to_legacy(include_non_toc=include_non_toc)
 
 
 def _iter_feed_items(root: ElementTree.Element) -> Iterator[ElementTree.Element]:
     channel = root.find("./channel")
-    if channel is None:
-        return
-    for element in channel:
-        if element.tag == "item":
-            yield element
+    if channel is not None:
+        yield from channel.findall("item")
 
 
-def _parse_feed(feed_xml: str, source: str) -> ElementTree.Element | None:
+def _file_index(feed_file: Path) -> FeedChapterIndex | None:
     try:
-        root = ElementTree.fromstring(feed_xml)
-    except ElementTree.ParseError:
-        logger.warning("Failed to parse podcast feed {}", source)
-        return None
-    if root.find("./channel") is None:
-        logger.warning("Failed to find channel in podcast feed {}", source)
-        return None
-    return root
-
-
-def _read_feed_file(feed_file: Path) -> str | None:
-    try:
-        return feed_file.read_text(encoding="utf-8")
+        index = parse_feed_chapters(feed_file.read_bytes(), source=str(feed_file))
     except (OSError, ValueError) as exc:
-        logger.error("Failed to read feed file {}: {}", feed_file, exc)
+        logger.warning("Failed to read/parse feed {}: {}", feed_file, exc)
         return None
+    _log_result(ChapterParseResult(issues=index.issues, source=index.source))
+    return index
 
 
-def extract_psc_chapters_from_file(feed_file: Path, guid: str) -> None | list[Chapter]:
-    """Extract PSC chapters for the episode with ``guid`` from a feed file."""
-    if not feed_file.exists():
-        logger.error("File not found {}", feed_file)
+def _legacy_psc(
+    index: FeedChapterIndex, guid: str, *, strict: bool
+) -> list[Chapter] | None:
+    if not index.has_psc(guid):
         return None
-    feed_content = _read_feed_file(feed_file)
-    if feed_content is None:
+    try:
+        result = index.psc_for_guid(guid, strict=strict)
+    except ChapterParseError as exc:
+        _log_failure(exc)
         return None
-    root = _parse_feed(feed_content, str(feed_file))
-    if root is None:
-        return None
-    return _extract_psc_chapters_for_guid(root, guid, str(feed_file))
+    _log_result(result)
+    return result.to_legacy()
+
+
+def extract_psc_chapters_from_file(
+    feed_file: Path, guid: str, *, strict: bool = False
+) -> list[Chapter] | None:
+    """Read a feed and look up legacy PSC chapters for one GUID."""
+    index = _file_index(feed_file)
+    return _legacy_psc(index, guid, strict=strict) if index is not None else None
 
 
 def extract_psc_chapters_from_url(
     feed_url: str,
     guid: str,
-    headers: dict | None = None,
+    headers: dict[str, str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> None | list[Chapter]:
-    """Fetch a podcast feed and extract PSC chapters for ``guid``."""
+    *,
+    strict: bool = False,
+) -> list[Chapter] | None:
+    """Fetch a feed once and look up legacy PSC chapters for one GUID."""
+    from .transport import get_response  # noqa: PLC0415
+
     try:
-        response = httpx2.get(
-            feed_url,
-            headers=headers or {},
-            timeout=timeout,
-            follow_redirects=True,
-        )
-    except httpx2.RequestError as exc:
-        logger.error("Error fetching feed {}: {}", feed_url, exc)
+        response = get_response(feed_url, headers, timeout)
+        index = parse_feed_chapters(response.content, source=feed_url)
+    except (ChapterFetchError, ChapterParseError) as exc:
+        _log_failure(exc)
         return None
-    if not response.is_success:
-        logger.error("Error {} fetching feed {}", response.status_code, feed_url)
-        return None
-    root = _parse_feed(response.text, feed_url)
-    if root is None:
-        return None
-    return _extract_psc_chapters_for_guid(root, guid, feed_url)
-
-
-def _extract_psc_chapters_for_guid(
-    root: ElementTree.Element,
-    guid: str,
-    source: str,
-) -> None | list[Chapter]:
-    for item in _iter_feed_items(root):
-        found_guid = item.find("guid")
-        if found_guid is not None and found_guid.text == guid:
-            if (psc_chapters := item.find(f"./{PSC}chapters")) is not None:
-                return extract_psc_chapters(psc_chapters)
-            logger.info("Failed PSC chapters for episode {} in {}", guid, source)
-            return None
-    return None
+    _log_result(ChapterParseResult(issues=index.issues, source=index.source))
+    return _legacy_psc(index, guid, strict=strict)
 
 
 def extract_all_psc_chapters_from_file(
-    feed_file: Path,
-) -> None | dict[str, list[Chapter]]:
-    """Extract PSC chapters for every episode in a feed file, keyed by GUID."""
-    if not feed_file.exists():
-        logger.error("File not found {}", feed_file)
+    feed_file: Path, *, strict: bool = False
+) -> dict[str, list[Chapter]] | None:
+    """Read/parse once and extract PSC chapters for all episodes keyed by GUID."""
+    index = _file_index(feed_file)
+    if index is None:
         return None
-    feed_content = _read_feed_file(feed_file)
-    if feed_content is None:
-        return None
-    root = _parse_feed(feed_content, str(feed_file))
-    if root is None:
-        return None
-
-    all_chapters: dict[str, list[Chapter]] = {}
-    for item in _iter_feed_items(root):
-        found_guid = item.find("guid")
-        if found_guid is None or found_guid.text is None:
-            continue
-        if (psc_chapters := item.find(f"./{PSC}chapters")) is not None:
-            chapters = extract_psc_chapters(psc_chapters)
-            if chapters is not None:
-                all_chapters[found_guid.text] = chapters
+    all_chapters = {}
+    for guid in index.guids:
+        chapters = _legacy_psc(index, guid, strict=strict)
+        if chapters is not None:
+            all_chapters[guid] = chapters
     return all_chapters
 
 
-def extract_psc_chapters(psc_chapters: ElementTree.Element) -> None | list[Chapter]:
-    """Extract PSC chapters from XML.
-
-    psc_chapters: ElementTree.Element is the element <psc:chapters>.
-    """
+def extract_psc_chapters(
+    psc_chapters: ElementTree.Element, *, strict: bool = False
+) -> list[Chapter] | None:
+    """Extract legacy chapters from a PSC chapters element."""
     try:
-        return [
-            Chapter(
-                ts_to_secs(c.attrib["start"]),
-                c.attrib["title"],
-                c.attrib.get("href"),
-                c.attrib.get("image"),
-            )
-            for c in psc_chapters
-        ]
-    except (KeyError, ValueError, TypeError):
-        logger.warning("Failed to extract PSC chapters {}", psc_chapters)
+        result = parse_psc_chapters(psc_chapters, strict=strict)
+    except ChapterParseError as exc:
+        _log_failure(exc)
         return None
+    _log_result(result)
+    return result.to_legacy()
 
 
 def find_pci_chapters_url(feed_file: Path, guid: str) -> str | None:
-    """Find the ``<podcast:chapters>`` URL for the episode with ``guid``.
-
-    Returns the URL declared in the feed's Podcasting 2.0 namespace, ready to
-    pass to ``get_and_extract_pci_chapters``, or ``None`` if not declared.
-    """
-    if not feed_file.exists():
-        logger.error("File not found {}", feed_file)
-        return None
-    feed_content = _read_feed_file(feed_file)
-    if feed_content is None:
-        return None
-    root = _parse_feed(feed_content, str(feed_file))
-    if root is None:
-        return None
-    for item in _iter_feed_items(root):
-        found_guid = item.find("guid")
-        if found_guid is not None and found_guid.text == guid:
-            if (pci_chapters := item.find(f"./{PCI}chapters")) is not None:
-                return pci_chapters.attrib.get("url")
-            return None
-    return None
+    """Find a PCI URL using either supported podcast namespace URI."""
+    index = _file_index(feed_file)
+    return index.pci_url_for_guid(guid) if index is not None else None
