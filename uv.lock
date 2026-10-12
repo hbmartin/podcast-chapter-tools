@@ -1,6 +1,10 @@
 version = 1
 revision = 5
 requires-python = ">=3.13"
+resolution-markers = [
+    "python_full_version >= '3.14'",
+    "python_full_version < '3.14'",
+]
 
 [[package]]
 name = "anyio"
@@ -234,6 +238,11 @@ wheels = [
 ]
 
 [[package]]
+name = "garuff"
+version = "2026.7.0"
+source = { git = "https://github.com/gahjelle/garuff.git?rev=7d126c00f13b4d94f39f1107934089241ab7a6a1#7d126c00f13b4d94f39f1107934089241ab7a6a1" }
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -383,6 +392,12 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+garuff = [
+    { name = "garuff", marker = "python_full_version >= '3.14'" },
+]
+
+[package.group-requires-python]
+garuff = ">=3.14"
 
 [package.metadata]
 requires-dist = [
@@ -402,6 +417,7 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+garuff = [{ name = "garuff", marker = "python_full_version >= '3.14'", git = "https://github.com/gahjelle/garuff.git?rev=7d126c00f13b4d94f39f1107934089241ab7a6a1" }]
 
 [[package]]
 name = "pygments"

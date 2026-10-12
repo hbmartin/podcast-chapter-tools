@@ -51,3 +51,49 @@ jobs:
     - run: uv sync --locked
     - name: Rate packaging metadata with pyroma621
       run: uv run --locked pyroma --min 10 .
+
+  garuff:
+    name: Garuff (experimental, Python 3.14)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    # Report both style findings and checker failures during this evaluation.
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        persist-credentials: false
+    - name: Set up Python 3.14
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "3.14"
+    - name: Install uv
+      uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      with:
+        enable-cache: true
+    - name: Install the pinned Garuff checker
+      run: uv sync --locked --only-group garuff --python 3.14
+    - name: Check Python and agent files with Garuff
+      id: garuff
+      shell: bash
+      run: |
+        set -o pipefail
+        uv run --locked --only-group garuff --python 3.14 garuff check . 2>&1 | tee "$RUNNER_TEMP/garuff-report.txt"
+    - name: Add Garuff results to the job summary
+      if: ${{ always() }}
+      env:
+        GARUFF_OUTCOME: ${{ steps.garuff.outcome }}
+      shell: bash
+      run: |
+        {
+          printf 'Garuff check outcome: %s\n\n' "$GARUFF_OUTCOME"
+          printf 'Experimental checker: findings and execution failures do not block CI.\n\n'
+          if [ -f "$RUNNER_TEMP/garuff-report.txt" ]; then
+            printf '```text\n'
+            cat "$RUNNER_TEMP/garuff-report.txt"
+            printf '\n```\n'
+          else
+            printf 'No checker report was produced; review the setup and installation logs.\n'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

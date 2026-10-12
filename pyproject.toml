@@ -47,6 +47,15 @@ dev = [
     "ruff",
     "ty",
 ]
+# Opt in separately: Garuff requires Python 3.14, while the library supports 3.13.
+garuff = ["garuff"]
+
+[tool.uv.dependency-groups]
+garuff = { requires-python = ">=3.14" }
+
+[tool.uv.sources]
+# No packaged release yet; keep evaluations reproducible with an exact revision.
+garuff = { git = "https://github.com/gahjelle/garuff.git", rev = "7d126c00f13b4d94f39f1107934089241ab7a6a1" }
 
 [project.scripts]
 podcast-chapters = "podcast_chapter_tools.cli:main"
