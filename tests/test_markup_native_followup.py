@@ -78,13 +78,13 @@ def test_anchor_lookahead_respects_earlier_recovered_fragments(fragment):
     ]
 
 
-def test_formatted_anchor_after_prose_starts_a_visible_chapter():
+def test_formatted_anchor_after_prose_retains_strict_prose_continuity():
     result = parse_description_chapters(
-        'Preface <a href="https://e.com/1"\n>0:00 Intro</a>\n1:00 End'
+        'Preface <a href="https://e.com/1"\n>0:00 Intro</a>\n1:00 Next\n2:00 End'
     )
     assert [(c.start, c.title, c.url) for c in result.chapters] == [
-        (0, "Intro", "https://e.com/1"),
-        (60, "End", None),
+        (60, "Next", None),
+        (120, "End", None),
     ]
 
 

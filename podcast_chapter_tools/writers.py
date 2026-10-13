@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 from .entities import Chapter, ChapterData
@@ -90,7 +91,9 @@ def chapters_to_description(chapters: Iterable[ChapterInput]) -> str:
             continue
         title = _TITLE_BREAK.sub(" ", data.title or "")
         line = f"{format_timestamp(data.start)} {title}"
-        if data.url is not None and data.url not in title:
-            line += f" {data.url}"
+        if data.url is not None:
+            url = _TITLE_BREAK.sub(lambda match: quote(match[0], safe=""), data.url)
+            if url not in title:
+                line += f" {url}"
         lines.append(line)
     return "\n".join(lines)

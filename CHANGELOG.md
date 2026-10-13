@@ -110,11 +110,16 @@ change as described below.
   recover as chapters. URL/query/email tokens favor chapter recovery.
   URL/query fragments, slash-free domain queries, arithmetic, and punctuated
   prose no longer hide chapters; ambiguous `Show x=y` retains
-  attribute interpretation. Tags begun within an explicit visible chapter line
-  recover leading blockquote chapters; tags begun on other lines retain
-  formatter-style terminators and links. Complete HTTP(S) anchors with matching
-  closing tags take precedence even within chapter lines, keeping formatted
-  chapter boundaries and link context together. Anchor lookahead is cached;
+  attribute interpretation. Framework evidence includes `[(name)]`, `*name`,
+  `.name`, namespace/dynamic forms such as `v-bind:[key]`, and identifier-shaped
+  modifier chains such as `on:click|once`.
+  Balanced formatted tags, relative anchors, void elements, and genuine
+  self-closing tags take precedence over blockquote recovery. Opening terminators
+  introduce chapter boundaries only after empty visible context or chapter text;
+  strict prose stays continuous. Complete split closing tags close markup/link
+  context before following chapters, with formatted boundaries after the closing
+  tag. Unbalanced tags retain recovery using both visible HTML and physical
+  source prefixes. Lazy token/balance lookahead reuses discovered boundaries;
   comments, attributes, and raw contents cannot supply matching closing tags.
   Generic HTML stripping does not apply this recovery; recovered title fragments
   remain literal.
@@ -131,7 +136,9 @@ change as described below.
   UTF-8 bytes with LF endings and preserving existing output on encoding failure.
   Description writers flatten all title line boundaries recognized by `splitlines`,
   including Unicode separators and trailing boundaries,
-  while parsing results retain literal titles.
+  while parsing results retain literal titles. Rendered URL fields percent-encode
+  all such boundaries, using UTF-8 for Unicode separators, preventing chapter-line
+  injection without changing parsed URLs or existing percent escapes.
 - HTTP feeds prioritize BOMs, then explicit charsets, then XML byte detection.
   Unknown charsets and decoding failures retry XML byte detection; structural XML
   failures and successful decodes do not. Common encodings avoid full-feed string
@@ -147,7 +154,9 @@ change as described below.
   Python slots are restored before invoking custom `__setstate__`; a custom getter
   controls dictionary and Python-slot state, including deliberate exclusions.
   Standard state works without custom setters, and `None` skips the setter.
-  Native constructor `None` for errno/strerror survives reconstruction; constructor
+  Native constructor `None` for errno/strerror survives reconstruction regardless
+  of initialization order, with presence reconciled after custom state getters
+  and later native reinitialization; constructor
   `None` filenames retain their unset state. Native presence tracking uses weak
   identities outside instance dictionaries, including unhashable subclasses.
   Copying honors registered reducers and custom reduce methods with protocol 4,

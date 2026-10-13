@@ -133,24 +133,32 @@ conservative attribute tokens and preceding boolean tokens can lead to an
 assignment such as `alt="y"`, `@click="play"`, `[prop]="value"`, or `1x="value"`.
 Plain names start with a Unicode letter/number, `_`, or `:`, followed by
 letters/numbers, combining marks, `_`, `:`, `.`, or `-`. Framework forms `@name`,
-`#name`, `[name]`, and `(name)` accept the same inner names. Complete ordinary
-tags retain arbitrary attribute names; this grammar only establishes recovery
-evidence. Names containing `/` or `?`, or a non-leading `@`, instead favor chapter
-recovery; tokens are never split to find an assignment.
+`#name`, `[name]`, `(name)`, `[(name)]`, `*name`, and `.name` accept the same inner
+names. Namespace/dynamic forms such as `v-bind:[key]` and identifier-shaped
+modifier chains such as `on:click|once` also provide attribute evidence. Complete
+ordinary tags retain arbitrary attribute names; this grammar only establishes
+recovery evidence. Names containing `/` or `?`, or a non-leading `@`, instead
+favor chapter recovery; tokens are never split to find an assignment.
 URL/query tokens are not split into attributes, so titles containing
 `https://example.com/?v=abc -> more` or `example.com?ref=pod -> more` recover
 correctly. Arithmetic and punctuated prose such as `Why 1+1 = 2` and
 `Q&A: rating = 5` also recover. Ambiguous `1:00 Show x=y`
 retains attribute interpretation; boolean tokens alone recover as chapters.
-When a pending tag began within a visible chapter line, including HTML-wrapped
-prefixes, a continuation beginning with `>` and a timestamp recovers as a
-blockquote chapter. A complete HTTP(S) anchor with a matching closing tag takes
-precedence: a formatted terminator introducing a chapter places the boundary
-before the anchor, keeping its markup and URL with that chapter. Closings inside
-attributes, comments, scripts, or styles do not establish a complete anchor.
-When the tag began outside a chapter line, a leading `>`
-completes the pending tag and preserves formatter-style links, allowing ASCII
-HTML padding. Incomplete inline anchors retain chapter recovery.
+Balanced formatted tags take precedence over blockquote recovery, including
+relative anchors, arbitrary inline tags, void elements, and genuine self-closing
+tags. When an opening terminator introduces a timestamp after empty visible
+context or chapter text, the boundary precedes the opening tag, keeping its
+markup and supported HTTP(S) URL with that chapter. After ordinary prose, the
+same formatting stays continuous in strict recognition mode; lenient recognition
+still finds prose timestamps. Complete split closing tags close their markup and
+link context before following chapter text; a formatted closing terminator after
+chapter text places the boundary after the closing tag.
+Tag balance uses a lazy forward cache; attributes, comments, scripts, and styles
+cannot supply matching closing tags. Unbalanced tags retain chapter recovery:
+visible HTML prefixes and physical source prefixes establish chapter context,
+so a continuation beginning with `>` and a timestamp can recover as a blockquote
+chapter. Outside chapter context, leading `>` completes the pending tag. ASCII
+HTML padding is allowed in formatted terminators.
 Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
 `Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
@@ -163,6 +171,10 @@ supported; raw blocks without a matching closing prefix remain suppressed.
 Description writers replace every `str.splitlines()` boundary inside titles with
 one space, including CRLF, Unicode separators, and trailing boundaries. Ordinary
 whitespace and original parsed titles are preserved.
+Rendered URL fields percent-encode every such boundary, including `%0D%0A` for
+CRLF and UTF-8 percent escapes for Unicode separators, so a URL cannot introduce
+another chapter line. Other URL characters, existing percent escapes, and
+original parsed URL values are preserved.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -243,8 +255,11 @@ Reconstruction preserves arguments, attributes, notes, and declared slots withou
 calling subclass constructors, including subclasses that also inherit `OSError`
 or `TimeoutError`. Cycles through arguments, dictionary fields, and Python slots
 survive pickle and deep copy; shallow copies retain references to the original
-field values. Native constructor `None` for `errno`/`strerror`, and explicit
-native `None` assignments and deletions, preserve their effect on error formatting.
+field values. Native constructor `None` for `errno`/`strerror` works whether native
+initialization happens before or after the chapter-error initializer. Native
+presence is reconciled after custom `__getstate__` runs, including later native
+reinitialization. Explicit native `None` assignments and deletions preserve their
+effect on error formatting.
 Constructor `None` filenames remain unset. Presence bookkeeping uses weak
 identity references and does not appear in `vars(error)` or custom Python state.
 Without custom `__getstate__`, Python slots are restored before custom
