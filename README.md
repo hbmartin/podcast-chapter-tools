@@ -169,11 +169,16 @@ line breaks, and decoded entity newlines, preventing an earlier chapter prefix
 from turning later prose timestamps into chapters. Lookahead retains compact
 numeric records and releases consumed segments; generic markup processing skips
 recovery caches entirely. Lookahead uses the same visible and physical prefix
-rules to classify pending raw openings, so earlier unrelated markup does not
-hide subsequent tags or chapters. Absence of a raw closing is cached only for
+events to classify pending raw openings, so earlier unrelated markup does not
+hide subsequent tags or chapters. The cache retains lexical boundaries and recovery
+alternatives; contextual decisions never replace those original records. Lookahead
+keeps only prefix state and boundary events, without HTML parser buffers, rendered
+text, or source spans. Absence of a raw closing is cached only for
 the range actually searched. Nested `<` and quotes cannot become tag-name
 characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
-malformed comparison fragments remain literal. Unfinished comments retain the
+malformed comparison fragments remain literal. A quote directly after a tag name
+makes its prefix literal without swallowing subsequent tags or chapter lines.
+Malformed or incomplete tags cannot introduce formatted-tag boundaries. Unfinished comments retain the
 entire remaining text literally in both description parsing and generic stripping.
 Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
@@ -289,21 +294,28 @@ Reconstruction preserves arguments, attributes, notes, and declared slots withou
 calling subclass constructors, including subclasses that also inherit `OSError`
 or `TimeoutError`. Cycles through arguments, dictionary fields, and Python slots
 survive pickle and deep copy; shallow copies retain references to the original
-field values. Native constructor `None` for `errno`/`strerror` works whether native
-initialization happens before or after the chapter-error initializer. Native
-presence is reconciled after custom `__getstate__` runs, including later native
-reinitialization. Explicit native `None` assignments and deletions preserve their
-effect on error formatting.
-Changing the other native field does not lose constructor `None` presence:
-`errno` and `strerror` reconcile independently, with available constructor state
-captured before explicit native-field changes. Bookkeeping skips unnecessary
-formatting probes and does not call user formatting hooks.
-Normal `args` reassignment also captures available native presence before the
-arguments change. Opaque custom arguments alone do not establish native
-initialization or populate previously unset fields. Native resets reconcile
-stale presence records independently from the current exception arguments.
-Constructor `None` filenames remain unset. Presence bookkeeping uses weak
-identity references and does not appear in `vars(error)` or custom Python state.
+field values. Native constructor `None` for `errno`/`strerror` is retained when
+presence can be established at a portable checkpoint, before or after the
+chapter-error initializer. Normal native-field assignments/deletions and `args`
+reassignment capture observed state before changing it. Presence is reconciled
+after custom `__getstate__` runs; detected unobserved changes invalidate old
+constructor assumptions. Constructor `None` filenames remain unset.
+Bookkeeping distinguishes verified constructor presence from explicit writes,
+including non-`None` writes, and deletions. Shared argument identities and opaque
+values do not establish native initialization. Primitive checks run only where a
+multi-argument tuple fallback cannot be confused with native formatting; no user
+formatting hooks run, and serialization never temporarily mutates the error.
+
+Direct calls to built-in initializers or descriptors can bypass observation.
+Python's native descriptors and reduction do not expose every distinction between
+unset fields and fields containing `None`. Exact preservation of such unobservable
+state is outside the default portable contract: use a subclass's custom reducer
+when that distinction matters. Default serialization retains arguments, custom
+state, current non-`None` fields, and reliably established presence, leaving unknown
+`None` fields unset without raising a new error or warning. It cannot guarantee
+native presence after every unobservable built-in reset.
+Presence bookkeeping uses weak identity references, retains no strong reference
+to the error or its state values, and stays out of `vars(error)` and Python state.
 Without custom `__getstate__`, Python slots are restored before custom
 `__setstate__` hooks run. A custom `__getstate__` owns dictionary and Python-slot
 state, allowing locks or other fields to be omitted; its state is passed unchanged

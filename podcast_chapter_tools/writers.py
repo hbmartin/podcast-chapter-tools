@@ -12,7 +12,7 @@ from .entities import Chapter, ChapterData
 from .timecodes import format_timestamp
 
 _TITLE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
-_URL_UNSAFE = re.compile(r"\r\n|[\s<>\"']")
+_URL_UNSAFE = re.compile(r"[\s<>\"']")
 
 PCI_VERSION = "1.2.0"
 PSC_VERSION = "1.2"
