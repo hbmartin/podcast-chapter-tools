@@ -13,6 +13,7 @@ from .timecodes import parse_timestamp
 DescriptionMode = Literal["strict", "lenient"]
 _MIN_CHAPTERS = 2
 _SEPARATORS = "-\u2013\u2014"
+_TOKEN_FOLLOW = ")]" + _SEPARATORS
 
 
 def _marker_start(
@@ -26,7 +27,7 @@ def _marker_start(
         and not (text[marker - 1].isspace() or text[marker - 1] == ">")
     ):
         return None
-    if end < len(text) and not (text[end].isspace() or text[end] in ")]" + _SEPARATORS):
+    if end < len(text) and not (text[end].isspace() or text[end] in _TOKEN_FOLLOW):
         return None
     return marker
 
@@ -57,7 +58,7 @@ def _timestamps(  # noqa: C901 - One forward scan, including explicit lenient mo
             and (
                 index == len(text)
                 or text[index].isspace()
-                or text[index] in ")]" + _SEPARATORS
+                or text[index] in _TOKEN_FOLLOW
             )
         ):
             token = token[:-1]
@@ -93,6 +94,29 @@ def _title(line: DescriptionLine, start: int, end: int) -> str:
     return inline_fragment(line.raw[raw_start:raw_end]).strip()
 
 
+def _chapter_candidate(
+    line: DescriptionLine,
+    title_start: int,
+    title_end: int,
+    token: str,
+    *,
+    incidental: bool,
+) -> tuple[float, str, str] | None:
+    """Validate timestamps before titles, except for titleless lenient prose."""
+    title = None
+    text_title = ""
+    if incidental:
+        title = _title(line, title_start, title_end)
+        text_title = plain_text(title)
+        if not text_title:
+            return None
+    start = parse_timestamp(token)
+    if title is None:
+        title = _title(line, title_start, title_end)
+        text_title = plain_text(title)
+    return start, title, text_title
+
+
 def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing options.
     description: str,
     *,
@@ -118,18 +142,23 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
             title_end = (
                 matches[index + 1][0] if index + 1 < len(matches) else len(line.text)
             )
-            title = _title(line, end, title_end)
-            text_title = plain_text(title)
-            if not text_title and mode == "lenient" and not explicit:
-                continue
             try:
-                start = parse_timestamp(token)
+                candidate = _chapter_candidate(
+                    line,
+                    end,
+                    title_end,
+                    token,
+                    incidental=mode == "lenient" and not explicit,
+                )
             except (ValueError, OverflowError) as exc:
                 issues.append(
                     ChapterIssue(entry_index, "start", "invalid_start", str(exc))
                 )
                 entry_index += 1
                 continue
+            if candidate is None:
+                continue
+            start, title, text_title = candidate
             url_match = _re_url.search(title)
             enclosing_url = line.url_at(end)
             url = unescape(url_match[0]) if url_match else enclosing_url

@@ -104,17 +104,28 @@ change as described below.
   explicit malformed-timestamp diagnostics are retained; lenient prose mentions
   without titles are ignored before timestamp validation.
 - Description-only recovery preserves chapter boundaries after unquoted newlines
-  while retaining continuation lines with attribute assignments. Generic HTML
-  stripping does not apply this recovery; recovered title fragments remain literal.
+  while retaining continuation lines with identifier-shaped attribute assignments.
+  URL/query fragments no longer hide chapters; ambiguous `Show x=y` retains
+  attribute interpretation. Tag terminators on the next line preserve links.
+  Generic HTML stripping does not apply this recovery; recovered title fragments
+  remain literal.
   Arbitrary tags and multiline attributes remain supported. Script/style handling
   uses ASCII names, distinguishes slash-valued attributes from self-closing tags,
   and recognizes closing-tag suffixes despite comparisons and quotes in contents.
+  Unfinished matching raw closing tags can release description chapters, while
+  generic stripping and truly unclosed raw blocks remain suppressed.
+  Explicit invalid timestamps are rejected before preparing their HTML titles.
+  Local PCI JSON files detect UTF-8, UTF-16, and UTF-32 from bytes.
 - HTTP feeds prioritize BOMs, then explicit charsets, then XML byte detection.
   Unknown charsets and decoding failures retry XML byte detection; structural XML
   failures and successful decodes do not. Common encodings avoid full-feed string
   copies, and unrecoverable failures follow the typed parse-error contract.
+  Encoding validation after native XML failures uses bounded chunks; Latin-1 and
+  failures after successful XML parsing avoid unnecessary decoding.
 - All chapter error types round-trip through pickle without losing context or
-  breaking process pools, including subclasses with custom constructors and slots.
+  breaking process pools, including subclasses with custom constructors and slots
+  that also inherit `OSError` or `TimeoutError`. Pickle and copy restore slots
+  before invoking custom `__setstate__` hooks.
   Cached feed failures raise fresh exceptions instead of retaining and growing
   traceback chains.
 - Atomic archive replacement preserves existing file permissions; new archives

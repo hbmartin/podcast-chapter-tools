@@ -1,21 +1,34 @@
 """Typed failures for parsing and fetching; missing chapters are not failures."""
 
-from types import MemberDescriptorType
+from types import BuiltinFunctionType, MemberDescriptorType
 
 from .entities import ChapterIssue, ChapterParseResult
+
+
+def _allocate_error[E: BaseException](cls: type[E]) -> E:
+    """Allocate through a compatible built-in, bypassing subclass constructors."""
+    for owner in cls.__mro__:
+        allocator = vars(owner).get("__new__")
+        if isinstance(allocator, BuiltinFunctionType) and issubclass(
+            owner, BaseException
+        ):
+            try:
+                return allocator(cls)
+            except TypeError:
+                continue
+    msg = f"No compatible built-in exception allocator for {cls.__qualname__}"
+    raise TypeError(msg)
 
 
 def _restore_error[E: BaseException](
     cls: type[E],
     # Exception arguments retain their immutable pickle representation.
     args: tuple[object, ...],  # garuff: ignore[GAC005]
-    attributes: dict[str, object],
     slots: list[tuple[type, str, object]],
 ) -> E:
     """Restore exception state without invoking subclass constructors."""
-    error = BaseException.__new__(cls, *args)
+    error = _allocate_error(cls)
     BaseException.__init__(error, *args)
-    error.__dict__.update(attributes)
     for owner, name, value in slots:
         vars(owner)[name].__set__(error, value)
     return error
@@ -33,8 +46,11 @@ def _error_reduction(
                     value = descriptor.__get__(error, type(error))
                 except AttributeError:
                     continue
+                # Unset native fields read as None; assigning it changes formatting.
+                if value is None and owner.__module__ == "builtins":
+                    continue
                 slots.append((owner, name, value))
-    return (_restore_error, (type(error), error.args, error.__dict__, slots))
+    return (_restore_error, (type(error), error.args, slots), error.__dict__)
 
 
 class ChapterParseError(ValueError):
@@ -88,11 +104,6 @@ class ChapterHTTPError(ChapterFetchError):
         self.status_code = status_code
         self.retry_after = retry_after
         super().__init__(f"HTTP {status_code}", url=url)
-
-    # Pickle reconstruction uses the immutable protocol tuple.
-    def __reduce__(self) -> tuple[object, ...]:  # garuff: ignore[GAC005]
-        """Describe pickle reconstruction with HTTP and retry context."""
-        return _error_reduction(self)
 
 
 class ChapterTransportError(ChapterFetchError):

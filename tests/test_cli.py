@@ -105,9 +105,22 @@ def test_from_pci_file(pci_json, tmp_path, capsys):
     assert "5:10 Main topic" in capsys.readouterr().out
 
 
-def test_from_pci_file_bad_json_returns_error(tmp_path, capsys):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "utf-32"])
+def test_from_pci_file_detects_json_encoding(encoding, tmp_path, capsys):
     source = tmp_path / "chapters.json"
-    source.write_text("{")
+    source.write_bytes(
+        json.dumps(
+            {"chapters": [{"startTime": 0, "title": "Café"}]}, ensure_ascii=False
+        ).encode(encoding)
+    )
+    assert main(["from-pci", str(source), "--to", "description"]) == 0
+    assert capsys.readouterr().out == "0:00 Café\n"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "utf-32"])
+def test_from_pci_file_bad_json_returns_error(tmp_path, capsys, encoding):
+    source = tmp_path / "chapters.json"
+    source.write_bytes("{".encode(encoding))
     assert main(["from-pci", str(source)]) == 1
     assert "Expecting" in capsys.readouterr().err
 

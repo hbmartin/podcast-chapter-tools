@@ -107,8 +107,9 @@ timestamps and ASCII/en/em-dash separators. Optional prefixes include a blockquo
 `>`, a case-insensitive `Chapters:` label, and bullets (`-`, `*`, `+`, `•`) or
 numbered markers (`1.` and `1)`) followed by whitespace. Leading Unicode format
 characters (category `Cf`, including BOM and zero-width marks) are ignored during
-recognition, but characters inside titles are preserved. The description and PCI
-CLI commands accept UTF-8 files with or without a BOM.
+recognition, but characters inside titles are preserved. The description CLI
+accepts UTF-8 files with or without a BOM. Local PCI JSON files also support
+UTF-16 and UTF-32 through byte-based encoding detection.
 
 A single trailing `:` or `.` followed by whitespace, a closing bracket, a dash
 separator, or end-of-line is a timestamp delimiter: `0:00: Intro`, `0:00. Intro`,
@@ -124,14 +125,23 @@ and styles are ignored. Both modes use bounded forward scanning.
 
 Arbitrary HTML tag names and multiline attributes remain supported. Description
 extraction recovers an unquoted newline followed by a chapter-line prefix unless
-that continuation line contains an attribute assignment such as `alt="y"`.
-Timestamp-like boolean attributes alone are ambiguous and recover as chapter
-boundaries. Generic `strip_html()` does not apply chapter-boundary recovery.
+the continuation provides attribute evidence: after the prefix and timestamp,
+attribute names and any preceding boolean tokens must match
+`[A-Za-z_:][A-Za-z0-9_.:-]*` before an assignment such as `alt="y"`.
+URL/query tokens are not split into attributes, so titles containing
+`https://example.com/?v=abc -> more` recover correctly. Ambiguous `1:00 Show x=y`
+retains attribute interpretation; boolean tokens alone recover as chapters.
+A tag terminator `>` at the beginning of the next line, allowing ASCII HTML
+padding, completes the pending tag and preserves its links.
+Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
 `Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
 valid HTML continues to be interpreted as markup. Script/style names use ASCII
 case matching; comparisons in their contents do not hide matching closing tags,
-including tolerated slash and attribute suffixes.
+including tolerated slash and attribute suffixes. During description extraction,
+an unfinished matching `</script` or `</style` can release subsequent chapters
+at an unquoted recovery boundary. Quoted multiline closing attributes remain
+supported; raw blocks without a matching closing prefix remain suppressed.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -209,7 +219,9 @@ JSON/XML decoding failures preserve their underlying exception as `__cause__`.
 All four error types and subclasses with custom constructors support pickling,
 including use in `ProcessPoolExecutor`, without duplicating message context.
 Reconstruction preserves arguments, attributes, notes, and declared slots without
-calling subclass constructors. Their `message` attribute holds the
+calling subclass constructors, including subclasses that also inherit `OSError`
+or `TimeoutError`. Custom `__setstate__` hooks run after slot restoration when
+unpickling or copying an error. Their `message` attribute holds the
 unformatted error text. Repeated failed index lookups raise fresh exceptions while
 reusing cached failure details.
 The library makes one request per fetch, follows redirects, and performs no retry

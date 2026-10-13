@@ -82,12 +82,9 @@ def _preserve_mode(descriptor: int, temporary: Path, mode: int) -> None:
     if stat.S_IMODE(os.fstat(descriptor).st_mode) == mode:
         return
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(descriptor, mode)
-        else:
-            temporary.chmod(mode)
-    except (OSError, NotImplementedError) as exc:
-        if isinstance(exc, OSError) and exc.errno not in {
+        os.fchmod(descriptor, mode)
+    except OSError as exc:
+        if exc.errno not in {
             errno.EPERM,
             errno.EACCES,
             errno.ENOTSUP,
