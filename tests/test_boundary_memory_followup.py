@@ -142,13 +142,16 @@ def test_url_markup_cannot_inject_chapters(fragment, in_title):
     chapter = ChapterData(0, "Intro " + url if in_title else "Intro", url)
     rendered = chapters_to_description([chapter, ChapterData(60, "End")])
     safe = escape(
-        "".join(quote(c, safe="") if c in "<>\"'" else c for c in url), quote=False
+        "".join(quote(c, safe="") if c.isspace() or c in "<>\"'" else c for c in url),
+        quote=False,
     )
     assert rendered == f"0:00 Intro {safe}\n1:00 End"
     for mode in ("strict", "lenient"):
-        assert [
-            c.start for c in parse_description_chapters(rendered, mode=mode).chapters
-        ] == [0, 60]
+        parsed = parse_description_chapters(rendered, mode=mode)
+        assert [c.start for c in parsed.chapters] == [0, 60]
+        assert parsed.chapters[0].url == "".join(
+            quote(c, safe="") if c.isspace() or c in "<>\"'" else c for c in url
+        )
     assert chapter.url == url
     assert chapter.title == ("Intro " + url if in_title else "Intro")
 

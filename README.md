@@ -168,8 +168,13 @@ Physical and visible context reset together at HTML block boundaries, physical
 line breaks, and decoded entity newlines, preventing an earlier chapter prefix
 from turning later prose timestamps into chapters. Lookahead retains compact
 numeric records and releases consumed segments; generic markup processing skips
-recovery caches entirely. Nested `<` and quotes cannot become tag-name characters,
-so malformed comparison fragments remain literal.
+recovery caches entirely. Lookahead uses the same visible and physical prefix
+rules to classify pending raw openings, so earlier unrelated markup does not
+hide subsequent tags or chapters. Absence of a raw closing is cached only for
+the range actually searched. Nested `<` and quotes cannot become tag-name
+characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
+malformed comparison fragments remain literal. Unfinished comments retain the
+entire remaining text literally in both description parsing and generic stripping.
 Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
 `Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
@@ -190,14 +195,20 @@ After escaping identified URL text, description writers replace remaining
 Unicode separators, and trailing boundaries. Ordinary whitespace and original
 parsed titles are preserved.
 Rendered URL fields percent-encode every such boundary, including `%0D%0A` for
-CRLF and UTF-8 percent escapes for Unicode separators, plus raw `<`, `>`, and
-quotes. Ampersands become `&amp;` without first decoding entity-like URL text;
+CRLF, every other Unicode whitespace character (including spaces and tabs), and
+raw `<`, `>`, and quotes, using UTF-8 percent escapes for Unicode characters.
+Ampersands become `&amp;` without first decoding entity-like URL text;
 regular query separators survive reparsing. Exact occurrences of the chapter's
 URL inside its title receive the same escaping before title flattening, while
 already-rendered occurrences remain unchanged and avoid duplicate suffixes.
 These rules prevent URL entities or markup from introducing chapter lines.
 Other title markup, existing percent escapes, and original parsed data are
 preserved; only description serialization changes.
+Title sanitization beyond literal line-break flattening is deferred: preserved
+entities such as `&#10;` and block tags such as `<br>` or `<p>` can create chapter
+boundaries when output is parsed again. Lenient recognition also deliberately
+finds ordinary timestamps in title prose; arbitrary titles do not guarantee an
+exact chapter-count round trip in that mode.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -287,6 +298,10 @@ Changing the other native field does not lose constructor `None` presence:
 `errno` and `strerror` reconcile independently, with available constructor state
 captured before explicit native-field changes. Bookkeeping skips unnecessary
 formatting probes and does not call user formatting hooks.
+Normal `args` reassignment also captures available native presence before the
+arguments change. Opaque custom arguments alone do not establish native
+initialization or populate previously unset fields. Native resets reconcile
+stale presence records independently from the current exception arguments.
 Constructor `None` filenames remain unset. Presence bookkeeping uses weak
 identity references and does not appear in `vars(error)` or custom Python state.
 Without custom `__getstate__`, Python slots are restored before custom
