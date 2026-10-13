@@ -136,6 +136,13 @@ change as described below.
   Lookahead avoids HTMLParser buffers and skips decided prefix text.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Quotes directly after tag names remain literal rather than starting attributes.
+  Attribute quotes protect only values beginning after `=`; quotes in attribute
+  names or bare values no longer hide terminators from lookahead. Provisional
+  formatted candidates cannot block enclosing balance, while genuine nested
+  matches retain protection. Context-free lookahead consumes recovered raw closings.
+  Non-CR/LF separators retain the earlier `splitlines(keepends=True)` title and
+  source behavior: trailing separators before inline tags do not truncate titles,
+  and another segment within the same data chunk establishes the boundary.
   Lookahead shares contextual raw-opening classification with normal processing,
   preventing unrelated earlier markup from hiding later tags or chapters. Raw
   closing absence requires a searched range; cached tokens are consumed once.
@@ -187,7 +194,12 @@ change as described below.
   Native constructor `None` for errno/strerror is preserved when established at
   portable checkpoints, including before normal native-field or `args` changes.
   Explicit writes, deletions, and verified constructor presence retain distinct
-  provenance; detected unobserved mutations invalidate stale assumptions.
+  provenance; positively detected unobserved mutations conservatively invalidate
+  earlier presence records of every origin. Normal tracked changes preserve
+  established state and checkpoint after success. Primitive fingerprints and weak
+  identity witnesses replace discarded-object addresses, with bounded primitive
+  processing and unknown opaque comparisons. Built-in argument descriptor reads
+  bypass subclass `args` getters during bookkeeping and default serialization.
   Constructor `None` filenames remain unset. Weak identity bookkeeping stays
   outside instance dictionaries and supports unhashable subclasses.
   Shared identities and opaque arguments do not imply native construction.
@@ -197,6 +209,8 @@ change as described below.
   unobservable. Such bypasses require a custom reducer for exact preservation;
   default serialization retains known state and omits unknown `None` fields without
   a new warning or failure. This narrows the previous native-reset guarantee.
+  Detectable argument-only bypasses can invalidate presence too; identical-value
+  resets and unsupported opaque changes can remain unobservable.
   Copying honors registered reducers and custom reduce methods with protocol 4,
   including custom reconstruction factories and sixth-item state updaters.
   Cached feed failures raise fresh exceptions instead of retaining and growing

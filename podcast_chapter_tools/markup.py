@@ -9,6 +9,7 @@ from html import unescape
 from html.parser import HTMLParser
 from unicodedata import category
 
+from ._boundaries import HARD_BREAKS, LINE_BREAK_PATTERN
 from .recognition import _ChapterPrefix, chapter_timestamp_end
 
 _BLOCKS = frozenset(
@@ -78,18 +79,17 @@ _VOID = frozenset(
 _ENTITY = re.compile(
     r"&(?:#[0-9]{1,10};?|#[xX][0-9a-fA-F]{1,8};?|[A-Za-z][A-Za-z0-9]{0,31};?)"
 )
-_DATA_EVENT = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]|" + _ENTITY.pattern)
+_DATA_EVENT = re.compile(LINE_BREAK_PATTERN + "|" + _ENTITY.pattern)
 _CONTEXT_BOUNDARY = re.compile(
-    r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]|"
+    LINE_BREAK_PATTERN + "|"
     r"&#(?:[0-9]{1,10}|[xX][0-9a-fA-F]{1,8});?|&NewLine;"
 )
-_LINE_BREAKS = frozenset(
-    {"\r\n", "\r", "\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
-)
+_LITERAL = 0
+_DECODE = 1
+_BOUNDARY = 2
 _HTML_SPACE = "\t\n\f\r "
 _LINE_SPACE = "\t\f "
 _ATTRIBUTE_END = _HTML_SPACE + "><='\""
-_TAG_NAME_END = _HTML_SPACE + "/>"
 _INVALID_VALUE_START = "<=>`"
 _TAG_NAME = re.compile(r"</?([A-Za-z][^\t\n\f\r /><'\"]*)")
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
@@ -172,7 +172,7 @@ def _recover_line(text: str, index: int) -> bool:
     return not _has_attribute_assignment(text, end)
 
 
-def _tag_end(
+def _tag_end(  # noqa: C901 - Attribute state and chapter recovery share a bounded scan.
     text: str,
     cursor: int,
     *,
@@ -180,20 +180,30 @@ def _tag_end(
 ) -> tuple[int, bool]:
     """Scan to a tag end or recovery boundary while tracking quoted text."""
     quote = ""
+    value = False
+    bare = False
     nested = False
     while cursor < len(text):
         char = text[cursor]
         if quote:
             if char == quote:
                 quote = ""
-        elif char in {"'", '"'}:
-            quote = char
         elif char == ">":
             break
         elif char == "<":
             nested = True
         elif recover_chapters and char in "\r\n" and _recover_line(text, cursor + 1):
             return cursor, nested
+        elif char in _HTML_SPACE:
+            bare = False
+        elif value:
+            value = False
+            if char in {"'", '"'}:
+                quote = char
+            else:
+                bare = True
+        elif char == "=" and not bare:
+            value = True
         cursor += 1
     return cursor, nested
 
@@ -211,8 +221,7 @@ def _tag_boundary(
     if delimiter in {"'", '"'}:
         return match, match.end(), True
     end, nested = _tag_end(text, match.end(), recover_chapters=recover_chapters)
-    malformed = match.end() < len(text) and text[match.end()] not in _TAG_NAME_END
-    return match, end, nested or malformed
+    return match, end, nested
 
 
 def _comment_end(text: str, start: int) -> int:
@@ -434,6 +443,9 @@ class _TagCache:
         self.recover = recover_chapters
         self.tokens = _TokenStore(len(text))
         self.stack = array(self.tokens.width)
+        self.positions: dict[str, array] = {}
+        self.provisional_starts = array(self.tokens.width)
+        self.provisional_ends = array(self.tokens.width)
         self.cursor = 0
         self.raw: str | None = None
         self.shape: _TagShape | None = None
@@ -511,7 +523,9 @@ class _TagCache:
 
     def _next(
         self,
-    ) -> tuple[int, _TagToken, bool] | None:  # garuff: ignore[GAC005] - Scan result.
+    ) -> (
+        tuple[int, _TagToken, bool, bool] | None
+    ):  # garuff: ignore[GAC005] - Scan result.
         """Advance the lookahead frontier past comments and suppressed raw text."""
         raw_region = self.raw
         if raw_region is not None:
@@ -527,6 +541,7 @@ class _TagCache:
                 return None
             token = self._initial if self._initial is not None else self._scan(start)
             self._initial = None
+        provisional = False
         if self.context is not None:
             if raw_region is None:
                 self.context.data(self.text, self.cursor, token.start)
@@ -534,19 +549,90 @@ class _TagCache:
                 token,
                 self.context.visible,
                 self.context.source,
-                protected=token.balanced or token.self_closing or token.name in _VOID,
+                protected=token.self_closing or token.name in _VOID,
                 raw_closing=raw_region is not None and token.end < len(self.text),
+            )
+            provisional = bool(
+                token.complete
+                and token.formatted
+                and not token.closing
+                and token.name not in _RAW_END
+                and (
+                    self.context.visible.chapter
+                    or self.context.visible.state == "leading"
+                )
             )
             self.context.consume(self.text, token, event)
         else:
-            event = _recovery_event(token, None, None, protected=False)
+            event = _recovery_event(
+                token,
+                None,
+                None,
+                protected=False,
+                raw_closing=raw_region is not None and token.end < len(self.text),
+            )
         position = self.tokens.append(token)
         self.cursor = event.following
         if event.complete and not token.closing and not token.self_closing:
             raw = _RAW_START.match(self.text, token.start)
             if raw is not None:
                 self.raw = raw[1].lower()
-        return position, token, event.complete
+        return position, token, event.complete, provisional
+
+    def _push(self, position: int, name: str, *, provisional: bool) -> None:
+        """Index matching depths and pack contiguous provisional candidates."""
+        depth = len(self.stack)
+        self.stack.append(position)
+        if provisional:
+            locations = self.positions.get(name)
+            if locations is None:
+                locations = self.positions[name] = array(self.tokens.width)
+            locations.append(depth)
+            if self.provisional_ends and self.provisional_ends[-1] == depth - 1:
+                self.provisional_ends[-1] = depth
+            else:
+                self.provisional_starts.append(depth)
+                self.provisional_ends.append(depth)
+
+    def _pop(self) -> int:
+        """Release matching indexes as one candidate leaves the balance stack."""
+        position = self.stack.pop()
+        depth = len(self.stack)
+        if self.provisional_ends and self.provisional_ends[-1] == depth:
+            name = self.tokens.name(position)
+            locations = self.positions[name]
+            locations.pop()
+            if not locations:
+                del self.positions[name]
+            if self.provisional_starts[-1] == depth:
+                self.provisional_starts.pop()
+                self.provisional_ends.pop()
+            else:
+                self.provisional_ends[-1] -= 1
+        return position
+
+    def _matching(self, name: str) -> int | None:
+        """Skip unresolved formatted candidates without crossing a complete tag."""
+        if not self.stack:
+            return None
+        if self.tokens.name(self.stack[-1]) == name:
+            return self._pop()
+        if (
+            not self.provisional_ends
+            or self.provisional_ends[-1] != len(self.stack) - 1
+        ):
+            return None
+        first = self.provisional_starts[-1]
+        locations = self.positions.get(name)
+        if locations and locations[-1] >= first:
+            target = locations[-1]
+        elif first and self.tokens.name(self.stack[first - 1]) == name:
+            target = first - 1
+        else:
+            return None
+        while len(self.stack) - 1 > target:
+            self._pop()
+        return self._pop()
 
     def _begin_lookahead(
         self,
@@ -577,24 +663,21 @@ class _TagCache:
             return True
         self._begin_lookahead(opening, visible, source)
         while (record := self._next()) is not None:
-            position, token, interpreted_complete = record
-            if (
-                token.name in _RAW_END
-                and not token.closing
-                and not interpreted_complete
-            ):
-                continue
-            if token.comment or not (token.complete or interpreted_complete):
+            position, token, interpreted_complete, provisional = record
+            if token.comment or not (interpreted_complete or provisional):
                 continue
             if token.closing:
-                if self.stack and self.tokens.name(self.stack[-1]) == token.name:
-                    matched = self.stack.pop()
+                matched = self._matching(token.name)
+                if matched is not None:
                     self.tokens.mark_balanced(matched)
                     if self.tokens.start(matched) == opening.start:
                         return True
             elif not token.self_closing and token.name not in _VOID:
-                self.stack.append(position)
+                self._push(position, token.name, provisional=provisional)
         self.stack = array(self.tokens.width)
+        self.positions.clear()
+        self.provisional_starts = array(self.tokens.width)
+        self.provisional_ends = array(self.tokens.width)
         return False
 
 
@@ -602,15 +685,6 @@ class _SourcePrefix:
     def __init__(self) -> None:
         """Track physical prefixes independently of visible HTML line boundaries."""
         self.prefix = _ChapterPrefix()
-
-    def data(self, data: str) -> None:
-        """Consume literal source lines without retaining or decoding their text."""
-        for index, line in enumerate(data.splitlines(keepends=True)):
-            if index:
-                self.prefix.reset()
-            self.prefix.feed(line.rstrip("\r\n"))
-            if line.endswith(("\r", "\n")):
-                self.prefix.reset()
 
     def tag(self, token: _TagToken) -> None:
         """Ignore attribute lines while retaining a formatted terminator's prefix."""
@@ -682,16 +756,27 @@ def _recovery_event(
     )
 
 
-def _data_events(text: str, start: int, end: int) -> Iterator[tuple[int, int, bool]]:
+def _physical_boundary(text: str, start: int, end: int, limit: int) -> bool:
+    """Retain soft separators and split only when the chunk has another segment."""
+    return text[start] in "\r\n" or end < limit
+
+
+def _data_events(text: str, start: int, end: int) -> Iterator[tuple[int, int, int]]:
     """Share literal ranges and bounded entity/line events without slicing runs."""
     cursor = start
     for match in _DATA_EVENT.finditer(text, start, end):
         if cursor < match.start():
-            yield cursor, match.start(), False
-        yield match.start(), match.end(), True
+            yield cursor, match.start(), _LITERAL
+        if text[match.start()] == "&":
+            yield match.start(), match.end(), _DECODE
+        else:
+            if text[match.start()] not in "\r\n":
+                yield match.start(), match.end(), _LITERAL
+            if _physical_boundary(text, match.start(), match.end(), end):
+                yield match.end(), match.end(), _BOUNDARY
         cursor = match.end()
     if cursor < end:
-        yield cursor, end, False
+        yield cursor, end, _LITERAL
 
 
 class _RecoveryContext:
@@ -736,7 +821,7 @@ class _RecoveryContext:
         """Inspect only undecided prefixes and potential boundary events."""
         if start == end:
             return
-        if end - start <= 2 and text[start:end] in _LINE_BREAKS:  # noqa: PLR2004 - CRLF is the only two-character boundary.
+        if end - start <= 2 and text[start:end] in HARD_BREAKS:  # noqa: PLR2004 - CRLF is the only two-character boundary.
             self.boundary()
             return
         cursor = start
@@ -751,7 +836,11 @@ class _RecoveryContext:
                 else:
                     self.visible.feed(entity)
             else:
-                self.boundary()
+                if text[match.start()] not in "\r\n":
+                    self.source.prefix.feed(text, match.start(), match.end())
+                    self.visible.feed(text, match.start(), match.end())
+                if _physical_boundary(text, match.start(), match.end(), end):
+                    self.boundary()
             cursor = match.end()
         self.source.prefix.feed(text, cursor, end)
         self._visible_data(text, cursor, end)
@@ -869,16 +958,17 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
         return
     index = 0
     cache = _TagCache(text, recover_chapters=recover_chapters)
-    source = source_context if source_context is not None else _SourcePrefix()
+    if source_context is None or line_context is None:
+        msg = "Chapter recovery requires parser-owned source and visible context"
+        raise ValueError(msg)
+    source = source_context
     while index < len(text):
         start = text.find("<", index)
         data = text[index:] if start < 0 else text[index:start]
-        if source_context is None:
-            source.data(data)
         yield False, data
         if start < 0:
             break
-        visible = line_context() if line_context is not None else None
+        visible = line_context()
         token = cache.token(start)
         protected = False
         if (
@@ -897,8 +987,6 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
             yield False, "\n"
         if not event.complete:
             fragment = text[start : event.end] if event.end > start else "<"
-            if source_context is None:
-                source.data(fragment)
             yield False, fragment
             index = event.following
             continue
@@ -1013,7 +1101,7 @@ class _Lines(HTMLParser):
 
     def _append(self, raw: str, visible: str) -> None:
         """Append raw and visible text, merging adjacent literal spans."""
-        if visible in {"\r", "\n", "\r\n"}:
+        if len(visible) <= 2 and visible in HARD_BREAKS:  # noqa: PLR2004 - CRLF is the only two-character boundary.
             self.boundary()
             return
         if self._prefix is not None:
@@ -1056,17 +1144,17 @@ class _Lines(HTMLParser):
         """Split visible data into lines and decode entities with source spans."""
         if self._hidden:
             return
-        if data in _LINE_BREAKS:
+        if len(data) <= 2 and data in HARD_BREAKS:  # noqa: PLR2004 - CRLF is the only two-character boundary.
             self.boundary()
             return
-        for start, end, special in _data_events(data, 0, len(data)):
+        for start, end, kind in _data_events(data, 0, len(data)):
             if self._source is not None:
                 self._source.prefix.feed(data, start, end)
-            if special and data[start] != "&":
+            if kind == _BOUNDARY:
                 self.boundary()
             else:
                 raw = data[start:end]
-                self._append(raw, unescape(raw) if special else raw)
+                self._append(raw, unescape(raw) if kind == _DECODE else raw)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         """Track block boundaries, suppressed content, and inline links."""

@@ -164,7 +164,7 @@ visible HTML prefixes and physical source prefixes establish chapter context,
 so a continuation beginning with `>` and a timestamp can recover as a blockquote
 chapter. Outside chapter context, leading `>` completes the pending tag. ASCII
 HTML padding is allowed in formatted terminators.
-Physical and visible context reset together at HTML block boundaries, physical
+Physical and visible context reset together at HTML block boundaries, CR/LF
 line breaks, and decoded entity newlines, preventing an earlier chapter prefix
 from turning later prose timestamps into chapters. Lookahead retains compact
 numeric records and releases consumed segments; generic markup processing skips
@@ -178,6 +178,11 @@ the range actually searched. Nested `<` and quotes cannot become tag-name
 characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
 malformed comparison fragments remain literal. A quote directly after a tag name
 makes its prefix literal without swallowing subsequent tags or chapter lines.
+Attribute scanning protects quotes only at the beginning of a value after `=`;
+quotes in attribute names or bare values do not hide following terminators.
+Unresolved formatted candidates cannot block an enclosing tag's balance;
+matching nested candidates still receive formatted-tag protection. Recovered raw
+closings end suppression consistently even in context-free balance lookahead.
 Malformed or incomplete tags cannot introduce formatted-tag boundaries. Unfinished comments retain the
 entire remaining text literally in both description parsing and generic stripping.
 Generic `strip_html()` does not apply chapter-boundary recovery.
@@ -195,6 +200,10 @@ even if a later matching closing exists. The unfinished opening remains literal.
 Complete same-line openings and ordinary raw blocks keep their suppression.
 Malformed matching raw closings consume a scanned terminator rather than leaking
 it into the preceding title.
+Parsing retains the earlier `splitlines(keepends=True)` behavior for non-CR/LF
+separators such as U+2028: their literal characters remain in source mappings,
+and another segment in the same data chunk begins a new line. A separator at the
+end of a chunk before an inline tag does not discard the following title text.
 After escaping identified URL text, description writers replace remaining
 `str.splitlines()` boundaries inside titles with one space, including CRLF,
 Unicode separators, and trailing boundaries. Ordinary whitespace and original
@@ -298,13 +307,21 @@ field values. Native constructor `None` for `errno`/`strerror` is retained when
 presence can be established at a portable checkpoint, before or after the
 chapter-error initializer. Normal native-field assignments/deletions and `args`
 reassignment capture observed state before changing it. Presence is reconciled
-after custom `__getstate__` runs; detected unobserved changes invalidate old
-constructor assumptions. Constructor `None` filenames remain unset.
+after custom `__getstate__` runs; positively detected unobserved changes clear
+earlier constructor, assignment, and deletion presence records conservatively.
+Normal tracked assignments preserve established state and update their checkpoints
+after success. Constructor `None` filenames remain unset.
 Bookkeeping distinguishes verified constructor presence from explicit writes,
 including non-`None` writes, and deletions. Shared argument identities and opaque
 values do not establish native initialization. Primitive checks run only where a
 multi-argument tuple fallback cannot be confused with native formatting; no user
 formatting hooks run, and serialization never temporarily mutates the error.
+Checkpoints use type-tagged primitive fingerprints and weak identity witnesses,
+not addresses of discarded argument tuples or state values. Variable-length
+primitive inputs are processed in bounded chunks; unsupported opaque comparisons
+remain unknown and do not independently clear reliable records. Bookkeeping and
+default serialization read the built-in argument descriptor without executing a
+subclass's `args` property.
 
 Direct calls to built-in initializers or descriptors can bypass observation.
 Python's native descriptors and reduction do not expose every distinction between
@@ -314,6 +331,9 @@ when that distinction matters. Default serialization retains arguments, custom
 state, current non-`None` fields, and reliably established presence, leaving unknown
 `None` fields unset without raising a new error or warning. It cannot guarantee
 native presence after every unobservable built-in reset.
+Even a detectable argument-only built-in call can invalidate prior presence,
+because the default serializer cannot prove that hidden fields were not reset.
+Identical-value resets and unknown opaque changes can remain unobservable.
 Presence bookkeeping uses weak identity references, retains no strong reference
 to the error or its state values, and stays out of `vars(error)` and Python state.
 Without custom `__getstate__`, Python slots are restored before custom
