@@ -14,10 +14,16 @@ class _ChapterPrefix:
 
     def __init__(self) -> None:
         """Start at a fresh visible line boundary."""
+        self.reset()
+
+    def reset(self, offset: int = 0) -> None:
+        """Reuse the recognizer at a new line or absolute source offset."""
         self.state = "leading"
         self.label_index = 0
         self.delimiter = ""
         self.chapter = False
+        self.numeric_start: int | None = None
+        self.offset = offset
 
     def _padding(self, char: str) -> None:
         """Consume optional prefixes or enter the numeric timestamp run."""
@@ -33,13 +39,16 @@ class _ChapterPrefix:
         elif char in "([":
             self.state = "wrapped"
         elif char.isdigit():
+            self.numeric_start = self.offset
             self.state = "number" if state in _PREFIX_LIST else "time"
         else:
             self.state = "done"
 
     def _character(self, char: str) -> None:
         """Advance the finite prefix states by one visible character."""
-        if self.state in _PREFIX_PADDING:
+        if char in "\r\n":
+            self.state = "done"
+        elif self.state in _PREFIX_PADDING:
             self._padding(char)
         elif self.state == "label":
             if char.lower() != _PREFIX_LABEL[self.label_index]:
@@ -52,16 +61,23 @@ class _ChapterPrefix:
             self.state = "after_marker" if char.isspace() else "done"
         elif self.state == "wrapped":
             self.state = "time" if char.isdigit() else "done"
+            if char.isdigit():
+                self.numeric_start = self.offset
         elif self.state == "delimiter":
-            if char.isspace():
-                self.state = "after_number"
-            elif self.delimiter == ".":
-                self.state = "time"
-                self._numeric(char)
-            else:
-                self.state = "done"
+            self._number_delimiter(char)
         else:
             self._numeric(char)
+
+    def _number_delimiter(self, char: str) -> None:
+        """Resolve numbered-list padding without losing decimal timestamp offsets."""
+        if char.isspace():
+            self.state = "after_number"
+            self.numeric_start = None
+        elif self.delimiter == ".":
+            self.state = "time"
+            self._numeric(char)
+        else:
+            self.state = "done"
 
     def _numeric(self, char: str) -> None:
         """Recognize a colon or distinguish numbered markers from timestamp dots."""
@@ -72,51 +88,21 @@ class _ChapterPrefix:
         elif not (char.isdigit() or (self.state == "time" and char == ".")):
             self.state = "done"
 
-    def feed(self, text: str) -> None:
+    def feed(self, text: str, start: int = 0) -> None:
         """Consume each prefix character once, stopping after its classification."""
-        for char in text:
+        for index in range(start, len(text)):
             if self.state == "done":
                 break
-            self._character(char)
-
-
-def _padding_end(text: str, index: int, *, leading: bool = False) -> int:
-    """Skip line-local padding and optionally leading format marks."""
-    while index < len(text) and text[index] not in "\r\n":
-        if not (text[index].isspace() or (leading and category(text[index]) == "Cf")):
-            break
-        index += 1
-    return index
+            self._character(text[index])
+            self.offset += 1
 
 
 def line_timestamp_start(text: str, index: int = 0) -> int | None:
     """Return the numeric start after an optional chapter-list prefix."""
-    index = _padding_end(text, index, leading=True)
-    if text[index : index + 1] == ">":
-        index = _padding_end(text, index + 1)
-    if text[index : index + 9].lower() == "chapters:":
-        index = _padding_end(text, index + 9)
-    if text[index : index + 1] in {"-", "*", "+", "•"}:
-        end = _padding_end(text, index + 1)
-        if end == index + 1:
-            return None
-        index = end
-    else:
-        end = index
-        while end < len(text) and text[end].isdigit():
-            end += 1
-        if end > index and text[end : end + 1] in {".", ")"}:
-            padded = _padding_end(text, end + 1)
-            if padded > end + 1:
-                index = padded
-    if text[index : index + 1] in {"(", "["}:
-        index += 1
-    return index if index < len(text) and text[index].isdigit() else None
-
-
-def begins_chapter_line(text: str, index: int) -> bool:
-    """Detect a timestamp candidate without scanning past its numeric run."""
-    return chapter_timestamp_end(text, index) is not None
+    prefix = _ChapterPrefix()
+    prefix.reset(index)
+    prefix.feed(text, index)
+    return prefix.numeric_start
 
 
 def chapter_timestamp_end(text: str, index: int) -> int | None:

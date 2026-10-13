@@ -121,14 +121,12 @@ def _capture_native_constructor(error: BaseException) -> None:
     errno, strerror, _, _ = native_values
     if arguments[0] is not errno or arguments[1] is not strerror:
         return
+    for name, value in zip(
+        ("errno", "strerror", "filename", "filename2"), native_values, strict=True
+    ):
+        if value is not None:
+            _record_native_none(error, OSError, name, present=None)
     fields = _native_fields(error)
-    candidates = [
-        name
-        for name, value in (("errno", errno), ("strerror", strerror))
-        if value is None and (OSError, name) not in fields
-    ]
-    if not candidates:
-        return
     # Native construction ignores None filenames, but populates errno/strerror.
     # Check plain native formatting without invoking user-defined str/repr hooks.
     plain = all(
@@ -136,9 +134,23 @@ def _capture_native_constructor(error: BaseException) -> None:
         for value in (*arguments, *native_values)
     )
     if plain and not _matches_native_format(error, arguments, fields):
-        return
-    for name in candidates:
-        _record_native_none(error, OSError, name, present=True)
+        fields = _reinitialized_native_fields(fields)
+        if not _matches_native_format(error, arguments, fields):
+            return
+    for name, value in (("errno", errno), ("strerror", strerror)):
+        if value is None and (OSError, name) not in fields:
+            _record_native_none(error, OSError, name, present=True)
+
+
+def _reinitialized_native_fields(
+    fields: dict[tuple[type, str], bool],
+) -> dict[tuple[type, str], bool]:
+    """Test whether later native initialization replaced recorded deletions."""
+    return {
+        field: present
+        for field, present in fields.items()
+        if present or field not in {(OSError, "errno"), (OSError, "strerror")}
+    }
 
 
 def _matches_native_format(
@@ -161,6 +173,7 @@ def _error_state(error: BaseException) -> _ErrorState:
     """Capture native fields and either default or subclass-owned Python state."""
     custom_getter = type(error).__getstate__ is not object.__getstate__
     python_state = error.__getstate__() if custom_getter else error.__dict__
+    _capture_native_constructor(error)
     recorded = _native_fields(error)
     presence: list[tuple[type, str, bool]] = []
     slots: list[tuple[type, str, object]] = []
@@ -183,6 +196,23 @@ def _error_state(error: BaseException) -> _ErrorState:
     return _ErrorState(error.args, slots, python_state, presence)
 
 
+def _state_parts(
+    state: object,
+) -> tuple[object, object]:  # garuff: ignore[GAC005] - Reconstruction state pair.
+    """Unpack the shared dictionary and optional slot-dictionary convention."""
+    return (
+        state
+        if isinstance(state, tuple) and len(state) == _SLOT_STATE_LENGTH
+        else (state, None)
+    )
+
+
+def _assign_slots(restored: object, slots: dict[str, object]) -> None:
+    """Apply standard named Python-slot state through normal attribute dispatch."""
+    for name, value in slots.items():
+        setattr(restored, name, value)
+
+
 def _apply_python_state(error: BaseException, state: object) -> None:
     """Apply a custom setter or the standard dictionary/slot-dictionary state."""
     if state is None:
@@ -190,9 +220,7 @@ def _apply_python_state(error: BaseException, state: object) -> None:
     if type(error).__setstate__ is not BaseException.__setstate__:
         cast("Callable[[object], None]", error.__setstate__)(state)
         return
-    dictionary, slots = state, None
-    if isinstance(state, tuple) and len(state) == _SLOT_STATE_LENGTH:
-        dictionary, slots = state
+    dictionary, slots = _state_parts(state)
     if dictionary is not None:
         if not isinstance(dictionary, dict):
             msg = "Exception state is not a dictionary"
@@ -202,8 +230,7 @@ def _apply_python_state(error: BaseException, state: object) -> None:
         if not isinstance(slots, dict):
             msg = "Exception slot state is not a dictionary"
             raise TypeError(msg)
-        for name, value in slots.items():
-            setattr(error, name, value)
+        _assign_slots(error, slots)
 
 
 def _apply_error_state(error: BaseException, state: _ErrorState) -> None:
@@ -238,14 +265,11 @@ def _copy_python_state(restored: object, state: object) -> None:
     if setter is not None:
         setter(state)
         return
-    dictionary, slots = state, None
-    if isinstance(state, tuple) and len(state) == _SLOT_STATE_LENGTH:
-        dictionary, slots = state
+    dictionary, slots = _state_parts(state)
     if dictionary is not None:
         vars(restored).update(cast("dict[str, object]", dictionary))
     if slots is not None:
-        for name, value in cast("dict[str, object]", slots).items():
-            setattr(restored, name, value)
+        _assign_slots(restored, cast("dict[str, object]", slots))
 
 
 def _copy_collection_items(
