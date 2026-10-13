@@ -1,12 +1,15 @@
 """Serialize legacy or rich chapters to PCI, PSC, and description text."""
 
 import json
+import re
 from collections.abc import Iterable
 from typing import Any
 from xml.etree import ElementTree
 
 from .entities import Chapter, ChapterData
 from .timecodes import format_timestamp
+
+_TITLE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
 
 PCI_VERSION = "1.2.0"
 PSC_VERSION = "1.2"
@@ -85,12 +88,7 @@ def chapters_to_description(chapters: Iterable[ChapterInput]) -> str:
         data = _data(chapter)
         if not data.toc:
             continue
-        title = (
-            (data.title or "")
-            .replace("\r\n", " ")
-            .replace("\r", " ")
-            .replace("\n", " ")
-        )
+        title = _TITLE_BREAK.sub(" ", data.title or "")
         line = f"{format_timestamp(data.start)} {title}"
         if data.url is not None and data.url not in title:
             line += f" {data.url}"

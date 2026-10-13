@@ -110,8 +110,9 @@ characters (category `Cf`, including BOM and zero-width marks) are ignored durin
 recognition, but characters inside titles are preserved. The description CLI
 accepts UTF-8 files with or without a BOM. Local PCI JSON files also support
 UTF-16 and UTF-32 through byte-based encoding detection.
-Before opening an output file, the CLI validates UTF-8 encoding of the complete
-rendered document. An encoding failure leaves existing output untouched.
+Before opening an output file, the CLI encodes the complete rendered document
+once as UTF-8, including its final LF, and writes those validated bytes. An
+encoding failure leaves existing output untouched; file output uses LF endings.
 
 A single trailing `:` or `.` followed by whitespace, a closing bracket, a dash
 separator, or end-of-line is a timestamp delimiter: `0:00: Intro`, `0:00. Intro`,
@@ -128,19 +129,28 @@ and styles are ignored. Both modes use bounded forward scanning.
 Arbitrary HTML tag names and multiline attributes remain supported. Description
 extraction recovers an unquoted newline followed by a chapter-line prefix unless
 the continuation provides attribute evidence: after the prefix and timestamp,
-HTML-style attribute tokens and preceding boolean tokens can lead to an
+conservative attribute tokens and preceding boolean tokens can lead to an
 assignment such as `alt="y"`, `@click="play"`, `[prop]="value"`, or `1x="value"`.
-Names containing `/`, beginning with `?`, or containing a non-leading `@` instead
-favor chapter recovery; tokens are never split to find an assignment.
+Plain names start with a Unicode letter/number, `_`, or `:`, followed by
+letters/numbers, combining marks, `_`, `:`, `.`, or `-`. Framework forms `@name`,
+`#name`, `[name]`, and `(name)` accept the same inner names. Complete ordinary
+tags retain arbitrary attribute names; this grammar only establishes recovery
+evidence. Names containing `/` or `?`, or a non-leading `@`, instead favor chapter
+recovery; tokens are never split to find an assignment.
 URL/query tokens are not split into attributes, so titles containing
-`https://example.com/?v=abc -> more` recover correctly. Ambiguous `1:00 Show x=y`
+`https://example.com/?v=abc -> more` or `example.com?ref=pod -> more` recover
+correctly. Arithmetic and punctuated prose such as `Why 1+1 = 2` and
+`Q&A: rating = 5` also recover. Ambiguous `1:00 Show x=y`
 retains attribute interpretation; boolean tokens alone recover as chapters.
-When a pending tag began within a physical source line with an explicit chapter
-prefix, a continuation beginning with `>` and a timestamp recovers as a
-blockquote chapter. When the tag began on another source line, a leading `>`
+When a pending tag began within a visible chapter line, including HTML-wrapped
+prefixes, a continuation beginning with `>` and a timestamp recovers as a
+blockquote chapter. A complete HTTP(S) anchor with a matching closing tag takes
+precedence: a formatted terminator introducing a chapter places the boundary
+before the anchor, keeping its markup and URL with that chapter. Closings inside
+attributes, comments, scripts, or styles do not establish a complete anchor.
+When the tag began outside a chapter line, a leading `>`
 completes the pending tag and preserves formatter-style links, allowing ASCII
-HTML padding. This context rule chooses chapter interpretation for ambiguous
-inline tags and tag interpretation for ambiguous standalone tags.
+HTML padding. Incomplete inline anchors retain chapter recovery.
 Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
 `Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
@@ -150,8 +160,9 @@ including tolerated slash and attribute suffixes. During description extraction,
 an unfinished matching `</script` or `</style` can release subsequent chapters
 at an unquoted recovery boundary. Quoted multiline closing attributes remain
 supported; raw blocks without a matching closing prefix remain suppressed.
-Description writers replace CRLF, CR, and LF inside titles with spaces to keep
-title text on one output line. Parsing results retain the original title text.
+Description writers replace every `str.splitlines()` boundary inside titles with
+one space, including CRLF, Unicode separators, and trailing boundaries. Ordinary
+whitespace and original parsed titles are preserved.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -232,15 +243,20 @@ Reconstruction preserves arguments, attributes, notes, and declared slots withou
 calling subclass constructors, including subclasses that also inherit `OSError`
 or `TimeoutError`. Cycles through arguments, dictionary fields, and Python slots
 survive pickle and deep copy; shallow copies retain references to the original
-field values. Explicit native `None` assignments and deletions preserve their
-effect on error formatting.
+field values. Native constructor `None` for `errno`/`strerror`, and explicit
+native `None` assignments and deletions, preserve their effect on error formatting.
+Constructor `None` filenames remain unset. Presence bookkeeping uses weak
+identity references and does not appear in `vars(error)` or custom Python state.
 Without custom `__getstate__`, Python slots are restored before custom
 `__setstate__` hooks run. A custom `__getstate__` owns dictionary and Python-slot
 state, allowing locks or other fields to be omitted; its state is passed unchanged
 to a custom setter. Standard dictionary and dictionary/slot-dictionary state also
 work without a custom setter, and `None` skips the setter. Arguments and native
-fields are retained independently. The error's `message` attribute holds the
-unformatted error text. Repeated failed index lookups raise fresh exceptions while
+fields are retained independently. Copying honors registered reducers and custom
+`__reduce_ex__`/`__reduce__`, using protocol 4 and normal copy precedence. Custom
+reducers control their own reconstruction factories, including state updaters.
+The error's `message` attribute holds the unformatted error text. Repeated failed
+index lookups raise fresh exceptions while
 reusing cached failure details.
 The library makes one request per fetch, follows redirects, and performs no retry
 or negative caching. Consumers choose backoff and cache lifetimes. `httpx2` remains

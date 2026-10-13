@@ -104,26 +104,33 @@ change as described below.
   explicit malformed-timestamp diagnostics are retained; lenient prose mentions
   without titles are ignored before timestamp validation.
 - Description-only recovery preserves chapter boundaries after unquoted newlines
-  while retaining continuation lines with HTML-style attribute assignments,
-  including framework punctuation and digit-leading names. Preceding boolean
-  tokens remain attributes when followed by an assignment; boolean-only lines
+  while retaining continuation lines with conservative attribute assignments,
+  including framework forms, Unicode names, and digit-leading names. Preceding
+  boolean tokens remain attributes when followed by an assignment; boolean-only lines
   recover as chapters. URL/query/email tokens favor chapter recovery.
-  URL/query fragments no longer hide chapters; ambiguous `Show x=y` retains
-  attribute interpretation. Tags begun within an explicit physical chapter line
+  URL/query fragments, slash-free domain queries, arithmetic, and punctuated
+  prose no longer hide chapters; ambiguous `Show x=y` retains
+  attribute interpretation. Tags begun within an explicit visible chapter line
   recover leading blockquote chapters; tags begun on other lines retain
-  formatter-style terminators and links.
+  formatter-style terminators and links. Complete HTTP(S) anchors with matching
+  closing tags take precedence even within chapter lines, keeping formatted
+  chapter boundaries and link context together. Anchor lookahead is cached;
+  comments, attributes, and raw contents cannot supply matching closing tags.
   Generic HTML stripping does not apply this recovery; recovered title fragments
   remain literal.
   Arbitrary tags and multiline attributes remain supported. Script/style handling
   uses ASCII names, distinguishes slash-valued attributes from self-closing tags,
   and recognizes closing-tag suffixes despite comparisons and quotes in contents.
-  Unfinished matching raw closing tags can release description chapters, while
+  Unfinished matching raw closing tags can release description chapters,
+  including blockquotes and HTML-wrapped prefixes, while
   generic stripping and truly unclosed raw blocks remain suppressed.
   Explicit invalid timestamps are rejected before preparing their HTML titles.
   Title-preparation failures no longer become invalid-start diagnostics.
   Local PCI JSON files detect UTF-8, UTF-16, and UTF-32 from bytes.
-  The CLI validates output encoding before opening a destination, preserving
-  existing output on encoding failure. Description writers flatten title CR/LF
+  The CLI encodes output once before opening a destination, writing validated
+  UTF-8 bytes with LF endings and preserving existing output on encoding failure.
+  Description writers flatten all title line boundaries recognized by `splitlines`,
+  including Unicode separators and trailing boundaries,
   while parsing results retain literal titles.
 - HTTP feeds prioritize BOMs, then explicit charsets, then XML byte detection.
   Unknown charsets and decoding failures retry XML byte detection; structural XML
@@ -140,6 +147,11 @@ change as described below.
   Python slots are restored before invoking custom `__setstate__`; a custom getter
   controls dictionary and Python-slot state, including deliberate exclusions.
   Standard state works without custom setters, and `None` skips the setter.
+  Native constructor `None` for errno/strerror survives reconstruction; constructor
+  `None` filenames retain their unset state. Native presence tracking uses weak
+  identities outside instance dictionaries, including unhashable subclasses.
+  Copying honors registered reducers and custom reduce methods with protocol 4,
+  including custom reconstruction factories and sixth-item state updaters.
   Cached feed failures raise fresh exceptions instead of retaining and growing
   traceback chains.
 - Atomic archive replacement preserves existing file permissions; new archives

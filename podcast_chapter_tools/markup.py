@@ -2,12 +2,13 @@
 
 import re
 from bisect import bisect_right
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+from unicodedata import category
 
-from .recognition import begins_chapter_line, chapter_timestamp_end
+from .recognition import _ChapterPrefix, chapter_timestamp_end
 
 _BLOCKS = frozenset(
     {
@@ -79,9 +80,8 @@ _ENTITY = re.compile(
 _HTML_SPACE = "\t\n\f\r "
 _LINE_SPACE = "\t\f "
 _ATTRIBUTE_END = _HTML_SPACE + "><='\""
-_CONTROL_END = 32
-_DELETE = 127
 _INVALID_VALUE_START = "<=>`"
+_ANCHOR = re.compile(r"</?a(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
 _RAW_END = {
     tag: re.compile(rf"</{tag}(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
@@ -96,6 +96,26 @@ def _line_padding_end(text: str, cursor: int) -> int:
     return cursor
 
 
+def _attribute_name(name: str) -> bool:
+    """Accept conservative identifier and framework forms as recovery evidence."""
+    if not name or "/" in name or "?" in name or "@" in name[1:]:
+        return False
+    if name[0] in "@#":
+        name = name[1:]
+    elif name[0] in "[(":
+        if name[-1:] != ("]" if name[0] == "[" else ")"):
+            return False
+        name = name[1:-1]
+    return (
+        bool(name)
+        and (name[0].isalnum() or name[0] in "_:")
+        and all(
+            char.isalnum() or category(char).startswith("M") or char in "_:.-"
+            for char in name
+        )
+    )
+
+
 def _has_attribute_assignment(text: str, cursor: int) -> bool:
     """Read whole attribute tokens after an already recognized timestamp."""
     if text[cursor : cursor + 1] in {")", "]"}:
@@ -106,13 +126,7 @@ def _has_attribute_assignment(text: str, cursor: int) -> bool:
         while cursor < len(text) and text[cursor] not in _ATTRIBUTE_END:
             cursor += 1
         name = text[start:cursor]
-        if (
-            not name
-            or "/" in name
-            or name.startswith("?")
-            or "@" in name[1:]
-            or any(ord(char) < _CONTROL_END or ord(char) == _DELETE for char in name)
-        ):
+        if not _attribute_name(name):
             return False
         cursor = _line_padding_end(text, cursor)
         if text[cursor : cursor + 1] == "=":
@@ -165,13 +179,15 @@ def _tag_end(
 
 
 def _raw_parts(
-    text: str, index: int, tag: str, *, recover_chapters: bool = False
+    text: str, index: int, tag: str, *, recovery: tuple[bool, bool] = (False, False)
 ) -> tuple[list[tuple[bool, str]], int]:
     """Split raw script/style contents from the matching closing tag."""
     closing = _RAW_END[tag].search(text, index)
     if closing is None:
         return [(False, text[index:])], len(text)
-    end, _ = _tag_end(text, closing.end(), recover_chapters=recover_chapters)
+    end, _ = _tag_end(
+        text, closing.end(), recover_chapters=recovery[0], chapter_context=recovery[1]
+    )
     if end == len(text):
         return [(False, text[index:])], end
     # Suppressed contents have no source spans, including unfinished closings.
@@ -184,6 +200,14 @@ class _TagShape(HTMLParser):
         """Track whether a raw opening tag has a genuine self-closing marker."""
         super().__init__(convert_charrefs=False)
         self.self_closing = False
+        self.linked = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Recognize supported links without inspecting text or quoted tag content."""
+        href = dict(attrs).get("href")
+        self.linked = tag == "a" and bool(
+            href and href.startswith(("http://", "https://"))
+        )
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 - HTMLParser callback.
         """Distinguish slash markers from slash-valued unquoted attributes."""
@@ -193,51 +217,148 @@ class _TagShape(HTMLParser):
         """Classify one recognized raw opening tag with fresh parser state."""
         self.reset()
         self.self_closing = False
+        self.linked = False
         self.feed(part)
         return self.self_closing
 
 
-class _ChapterContext:
-    def __init__(self, text: str, *, enabled: bool) -> None:
-        """Cache recognition at each physical line's origin during forward scanning."""
+class _IndexContext(HTMLParser):
+    """Track visible prefixes during lookahead without retaining source spans."""
+
+    def __init__(self) -> None:
+        """Start a lightweight recovery context for the cached anchor scan."""
+        super().__init__(convert_charrefs=False)
+        self.prefix = _ChapterPrefix()
+        self.hidden: str | None = None
+
+    def chapter_context(self) -> bool:
+        """Read the current visible prefix classification."""
+        return self.prefix.chapter
+
+    def handle_data(self, data: str) -> None:
+        """Consume visible lines and entities without buffering titles or mappings."""
+        if self.hidden:
+            return
+        for index, line in enumerate(data.splitlines(keepends=True)):
+            if index:
+                self.prefix = _ChapterPrefix()
+            part = line.rstrip("\r\n")
+            cursor = 0
+            for match in _ENTITY.finditer(part):
+                self.prefix.feed(part[cursor : match.start()])
+                visible = unescape(match[0])
+                if visible in {"\r", "\n", "\r\n"}:
+                    self.prefix = _ChapterPrefix()
+                else:
+                    self.prefix.feed(visible)
+                cursor = match.end()
+            self.prefix.feed(part[cursor:])
+            if line.endswith(("\r", "\n")):
+                self.prefix = _ChapterPrefix()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 - HTMLParser callback.
+        """Apply the same block boundaries and raw suppression as visible lines."""
+        if self.hidden:
+            return
+        if tag in {"script", "style"}:
+            self.hidden = tag
+        elif tag in _BLOCKS:
+            self.prefix = _ChapterPrefix()
+
+    def handle_endtag(self, tag: str) -> None:
+        """Release matching raw blocks or reset at visible block boundaries."""
+        if self.hidden:
+            if self.hidden == tag:
+                self.hidden = None
+        elif tag in _BLOCKS:
+            self.prefix = _ChapterPrefix()
+
+
+class _AnchorEnds:
+    def __init__(self, text: str) -> None:
+        """Index complete linked anchors once, excluding comments and raw contents."""
         self.text = text
-        self.enabled = enabled
-        self.line_start = 0
-        self.context_line = -1
-        self.chapter = False
+        self.ends: dict[int, int] | None = None
+        self.stack: list[tuple[int, int, bool]] = []
+        self.parser: _TagShape | None = None
 
-    def advance(self, start: int, end: int) -> None:
-        """Account for consumed newlines without rescanning an earlier region."""
-        newline = max(
-            self.text.rfind("\n", start, end), self.text.rfind("\r", start, end)
-        )
-        if newline >= 0:
-            self.line_start = newline + 1
+    def end(self, start: int, cursor: int) -> int | None:
+        """Lazily protect complete anchors at formatted chapter continuations."""
+        if not _formatted_anchor(self.text, start, cursor):
+            return None
+        if self.ends is None:
+            self.ends = {}
+            self.parser = _TagShape()
+            context = _IndexContext()
+            for is_tag, part in _markup_parts(
+                self.text,
+                recover_chapters=True,
+                chapter_context=context.chapter_context,
+                on_tag=self._tag,
+                index_anchors=True,
+            ):
+                if is_tag:
+                    context.feed(part)
+                    context.clear_cdata_mode()
+                    context.close()
+                else:
+                    context.handle_data(part)
+        return self.ends.get(start)
 
-    def recognized(self) -> bool:
-        """Recognize a physical line once, even when it contains many tags."""
-        if self.context_line != self.line_start:
-            self.chapter = self.enabled and begins_chapter_line(
-                self.text, self.line_start
-            )
-            self.context_line = self.line_start
-        return self.chapter
+    def _tag(self, start: int, end: int, part: str) -> None:
+        """Pair anchors using source offsets rather than retained token strings."""
+        if not _ANCHOR.match(part) or self.ends is None or self.parser is None:
+            return
+        if part.startswith("</"):
+            if self.stack:
+                opening, tag_end, linked = self.stack.pop()
+                if linked:
+                    self.ends[opening] = tag_end
+        elif not self.parser.is_self_closing(part):
+            self.stack.append((start, end, self.parser.linked))
 
 
-def _markup_parts(
-    text: str, *, recover_chapters: bool = False
+def _formatted_anchor(text: str, start: int, cursor: int) -> bool:
+    """Detect only unquoted formatted anchor terminators introducing chapters."""
+    if cursor == len(text) or not _ANCHOR.match(text, start) or text[start + 1] == "/":
+        return False
+    if text[cursor] in "\r\n":
+        padded = _line_padding_end(text, cursor + 1)
+        return text[padded : padded + 1] == ">"
+    newline = max(text.rfind("\n", start, cursor), text.rfind("\r", start, cursor))
+    return (
+        newline >= start
+        and _line_padding_end(text, newline + 1) == cursor
+        and chapter_timestamp_end(text, cursor) is not None
+    )
+
+
+def _tag_name_start(text: str, start: int) -> int | None:
+    """Recognize a candidate tag's initial ASCII letter, optionally after a slash."""
+    index = start + 1
+    if text[index : index + 1] == "/":
+        index += 1
+    initial = text[index : index + 1]
+    return index if initial.isascii() and initial.isalpha() else None
+
+
+def _markup_parts(  # noqa: C901 - One bounded token scan with recovery and raw blocks.
+    text: str,
+    *,
+    recover_chapters: bool = False,
+    chapter_context: Callable[[], bool] | None = None,
+    on_tag: Callable[[int, int, str], None] | None = None,
+    index_anchors: bool = False,
 ) -> Iterator[tuple[bool, str]]:
     """Yield complete tags or literal data, scanning each candidate once."""
     index = 0
     shape = None
-    context = _ChapterContext(text, enabled=recover_chapters)
+    anchors = _AnchorEnds(text) if recover_chapters and not index_anchors else None
     while index < len(text):
         start = text.find("<", index)
         if start < 0:
             yield False, text[index:]
             break
-        # Advance physical-line context once, rather than rescanning long prefixes.
-        context.advance(index, start)
         yield False, text[index:start]
         if text.startswith("<!--", start):
             end = text.find("-->", start + 4)
@@ -245,24 +366,27 @@ def _markup_parts(
                 yield False, text[start:]
                 break
             index = end + 3
-            context.advance(start, index)
             continue
-        name_start = start + 1
-        if text[name_start : name_start + 1] == "/":
-            name_start += 1
-        initial = text[name_start : name_start + 1]
-        if not initial.isascii() or not initial.isalpha():
+        name_start = _tag_name_start(text, start)
+        if name_start is None:
             yield False, "<"
             index = start + 1
             continue
+        context = chapter_context() if chapter_context is not None else False
+        if index_anchors and _ANCHOR.match(text, start) and text[start + 1] != "/":
+            context = False
         cursor, nested = _tag_end(
             text,
             name_start,
             recover_chapters=recover_chapters,
-            chapter_context=context.recognized(),
+            chapter_context=context,
         )
-        # A complete multiline tag can change the following physical-line origin.
-        context.advance(start, cursor)
+        complete = anchors.end(start, cursor) if anchors is not None else None
+        if complete is not None:
+            cursor, nested = complete, False
+            yield False, "\n"
+        elif index_anchors and _formatted_anchor(text, start, cursor):
+            yield False, "\n"
         if cursor == len(text):
             yield False, text[start:]
             break
@@ -271,14 +395,21 @@ def _markup_parts(
             index = cursor
             continue
         part = text[start : cursor + 1]
+        if not nested and on_tag is not None:
+            on_tag(start, cursor, part)
         yield not nested, part
         index = cursor + 1
         raw_start = _RAW_START.match(part) if not nested else None
         if raw_start and not (shape := shape or _TagShape()).is_self_closing(part):
             parts, index = _raw_parts(
-                text, index, raw_start[1].lower(), recover_chapters=recover_chapters
+                text,
+                index,
+                raw_start[1].lower(),
+                recovery=(
+                    recover_chapters,
+                    chapter_context() if chapter_context is not None else False,
+                ),
             )
-            context.advance(cursor, index)
             yield from parts
 
 
@@ -327,9 +458,10 @@ class DescriptionLine:  # garuff: ignore[GAC009]
 
 
 class _Lines(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, *, recover_chapters: bool = False) -> None:
         """Initialize visible line buffers, compact spans, and link context."""
         super().__init__(convert_charrefs=False)
+        self._prefix = _ChapterPrefix() if recover_chapters else None
         self.lines: list[DescriptionLine] = []
         self._raw: list[str] = []
         self._text: list[str] = []
@@ -339,8 +471,14 @@ class _Lines(HTMLParser):
         self._visible_length = 0
         self._hidden: str | None = None
 
+    def chapter_context(self) -> bool:
+        """Read cached recognition of the current visible chapter prefix."""
+        return self._prefix.chapter if self._prefix is not None else False
+
     def boundary(self) -> None:
         """Flush the current visible line and reset its source buffers."""
+        if self._prefix is not None:
+            self._prefix = _ChapterPrefix()
         if self._spans:
             self.lines.append(
                 DescriptionLine(
@@ -360,6 +498,8 @@ class _Lines(HTMLParser):
         if visible in {"\r", "\n", "\r\n"}:
             self.boundary()
             return
+        if self._prefix is not None:
+            self._prefix.feed(visible)
         self._raw.append(raw)
         self._text.append(visible)
         if visible:
@@ -447,8 +587,12 @@ def description_lines(
     text: str, *, recover_chapters: bool = False
 ) -> list[DescriptionLine]:
     """Normalize boundaries without examining tag attributes as chapter text."""
-    parser = _Lines()
-    for is_tag, part in _markup_parts(text, recover_chapters=recover_chapters):
+    parser = _Lines(recover_chapters=recover_chapters)
+    for is_tag, part in _markup_parts(
+        text,
+        recover_chapters=recover_chapters,
+        chapter_context=parser.chapter_context if recover_chapters else None,
+    ):
         if is_tag:
             parser.feed(part)
             # Suppression is explicit; avoid buffering later fragments as CDATA.

@@ -1,6 +1,7 @@
 """Description timestamp scanning with linear forward progress."""
 
 import itertools
+from dataclasses import dataclass
 from html import unescape
 from typing import Literal
 
@@ -14,6 +15,18 @@ DescriptionMode = Literal["strict", "lenient"]
 _MIN_CHAPTERS = 2
 _SEPARATORS = "-\u2013\u2014"
 _TOKEN_FOLLOW = ")]" + _SEPARATORS
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Candidate:
+    """Explicit parsing outcome without mutating the caller's diagnostics."""
+
+    status: Literal["ignored", "invalid", "accepted"]
+    start: float = 0
+    title: str = ""
+    text_title: str = ""
+    # Candidate diagnostics retain an immutable snapshot.
+    issues: tuple[ChapterIssue, ...] = ()  # garuff: ignore[GAC005]
 
 
 def _marker_start(
@@ -94,15 +107,12 @@ def _title(line: DescriptionLine, start: int, end: int) -> str:
     return inline_fragment(line.raw[raw_start:raw_end]).strip()
 
 
-def _validated_start(
-    token: str, entry_index: int, issues: list[ChapterIssue]
-) -> float | None:
+def _validated_start(token: str, entry_index: int) -> float | ChapterIssue:
     """Convert only timestamp failures into invalid-start diagnostics."""
     try:
         return parse_timestamp(token)
     except (ValueError, OverflowError) as exc:
-        issues.append(ChapterIssue(entry_index, "start", "invalid_start", str(exc)))
-        return None
+        return ChapterIssue(entry_index, "start", "invalid_start", str(exc))
 
 
 def _chapter_candidate(
@@ -111,8 +121,8 @@ def _chapter_candidate(
     token: str,
     *,
     incidental: bool,
-    validation: tuple[int, list[ChapterIssue]],
-) -> tuple[float | None, str, str] | None:
+    entry_index: int,
+) -> _Candidate:
     """Validate timestamps before titles, except for titleless lenient prose."""
     title = None
     text_title = ""
@@ -120,14 +130,16 @@ def _chapter_candidate(
         title = _title(line, *title_bounds)
         text_title = plain_text(title)
         if not text_title:
-            return None
-    start = _validated_start(token, *validation)
-    if start is None:
-        return None, "", ""
+            return _Candidate(status="ignored")
+    start = _validated_start(token, entry_index)
+    if isinstance(start, ChapterIssue):
+        return _Candidate(status="invalid", issues=(start,))
     if title is None:
         title = _title(line, *title_bounds)
         text_title = plain_text(title)
-    return start, title, text_title
+    return _Candidate(
+        status="accepted", start=start, title=title, text_title=text_title
+    )
 
 
 def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing options.
@@ -160,14 +172,19 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
                 (end, title_end),
                 token,
                 incidental=mode == "lenient" and not explicit,
-                validation=(entry_index, issues),
+                entry_index=entry_index,
             )
-            if candidate is None:
+            if candidate.status == "ignored":
                 continue
-            start, title, text_title = candidate
-            if start is None:
+            issues.extend(candidate.issues)
+            if candidate.status == "invalid":
                 entry_index += 1
                 continue
+            start, title, text_title = (
+                candidate.start,
+                candidate.title,
+                candidate.text_title,
+            )
             url_match = _re_url.search(title)
             enclosing_url = line.url_at(end)
             url = unescape(url_match[0]) if url_match else enclosing_url
