@@ -129,6 +129,11 @@ change as described below.
   array-backed boundaries and stacks replace retained per-tag objects, release
   consumed segments, and keep dense unbalanced markup within allocation bounds.
   Generic stripping and title processing skip recovery caches and token objects.
+  Lexical records remain separate from contextual recovery decisions; normal
+  parsing and prefix-only lookahead share recovery events. Literal nameless `<`
+  fragments affect both contexts, and malformed formatted void tags retain their
+  title text. Quote-adjacent names resume scanning after their literal prefix.
+  Lookahead avoids HTMLParser buffers and skips decided prefix text.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Quotes directly after tag names remain literal rather than starting attributes.
   Lookahead shares contextual raw-opening classification with normal processing,
@@ -179,17 +184,19 @@ change as described below.
   Python slots are restored before invoking custom `__setstate__`; a custom getter
   controls dictionary and Python-slot state, including deliberate exclusions.
   Standard state works without custom setters, and `None` skips the setter.
-  Native constructor `None` for errno/strerror survives reconstruction regardless
-  of initialization order, with presence reconciled after custom state getters
-  and later native reinitialization; constructor
-  `None` filenames retain their unset state. Native presence tracking uses weak
-  identities outside instance dictionaries, including unhashable subclasses.
-  Constructor presence is captured before native-field changes and reconciled
-  independently for errno/strerror, retaining `None` when the other field changes.
-  Normal `args` reassignment captures native presence before changing arguments;
-  opaque custom arguments do not imply populated native fields. Native resets
-  reconcile stale recorded presence without changing constructor behavior.
-  Resolved states skip formatting probes; user formatting hooks are not invoked.
+  Native constructor `None` for errno/strerror is preserved when established at
+  portable checkpoints, including before normal native-field or `args` changes.
+  Explicit writes, deletions, and verified constructor presence retain distinct
+  provenance; detected unobserved mutations invalidate stale assumptions.
+  Constructor `None` filenames remain unset. Weak identity bookkeeping stays
+  outside instance dictionaries and supports unhashable subclasses.
+  Shared identities and opaque arguments do not imply native construction.
+  Primitive checks require an unambiguous multi-argument fallback; single-argument
+  message comparisons and user formatting hooks are not used.
+  Direct built-in initialization/descriptor calls can make native `None` presence
+  unobservable. Such bypasses require a custom reducer for exact preservation;
+  default serialization retains known state and omits unknown `None` fields without
+  a new warning or failure. This narrows the previous native-reset guarantee.
   Copying honors registered reducers and custom reduce methods with protocol 4,
   including custom reconstruction factories and sixth-item state updaters.
   Cached feed failures raise fresh exceptions instead of retaining and growing

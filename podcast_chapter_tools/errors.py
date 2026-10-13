@@ -5,7 +5,7 @@ from copyreg import dispatch_table
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from types import BuiltinFunctionType, MemberDescriptorType
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 from weakref import ReferenceType, ref
 
 if TYPE_CHECKING:
@@ -14,6 +14,12 @@ if TYPE_CHECKING:
 from .entities import ChapterIssue, ChapterParseResult
 
 _SLOT_STATE_LENGTH = 2
+_NATIVE_MIN_ARGS = 2
+_NATIVE_NAMES = ("errno", "strerror", "filename", "filename2") + (
+    ("winerror",) if "winerror" in vars(OSError) else ()
+)
+_PLAIN_NATIVE = frozenset({type(None), int, str, bytes, float, bool})
+type _PresenceOrigin = Literal["assigned", "deleted", "constructor"]
 
 
 def _allocate_error[E: BaseException](cls: type[E]) -> E:
@@ -40,15 +46,18 @@ class _ErrorState:  # garuff: ignore[GAC009]
     args: tuple[object, ...]  # garuff: ignore[GAC005]
     slots: list[tuple[type, str, object]]
     python_state: object
-    native_presence: list[tuple[type, str, bool]]
+    native_presence: list[tuple[type, str, bool, _PresenceOrigin]]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _NativePresence:  # garuff: ignore[GAC009] - Private positional registry records.
     """Identity-owned flags with no strong reference to their exception."""
 
     reference: ReferenceType[BaseException]
     fields: dict[tuple[type, str], bool]
+    origins: dict[tuple[type, str], _PresenceOrigin]
+    arguments: int
+    values: list[int]
 
 
 _NATIVE_STATE: dict[int, _NativePresence] = {}
@@ -81,141 +90,140 @@ def _native_fields(error: BaseException) -> dict[tuple[type, str], bool]:
     return entry.fields if entry is not None and entry.reference() is error else {}
 
 
-def _record_native_none(
-    error: BaseException, owner: type, name: str, *, present: bool | None
-) -> None:
-    """Track populated None, explicit deletion, or a cleared native override."""
+def _native_values(error: OSError) -> list[object]:
+    """Read native descriptors directly without user formatting or dispatch."""
+    return [vars(OSError)[name].__get__(error, type(error)) for name in _NATIVE_NAMES]
+
+
+def _native_entry(error: BaseException) -> _NativePresence:
+    """Create identity bookkeeping containing no strong reference to state values."""
     identity = id(error)
-    fields = _native_fields(error)
-    if present is None:
-        fields.pop((owner, name), None)
-        if not fields:
-            _NATIVE_STATE.pop(identity, None)
-        return
-    if not fields:
-        fields = {}
-        _NATIVE_STATE[identity] = _NativePresence(
-            ref(error, partial(_release_native, identity)), fields
+    entry = _NATIVE_STATE.get(identity)
+    if entry is None or entry.reference() is not error:
+        entry = _NativePresence(
+            ref(error, partial(_release_native, identity)), {}, {}, 0, []
         )
-    fields[owner, name] = present
+        _NATIVE_STATE[identity] = entry
+    return entry
 
 
-def _record_assignment(error: BaseException, name: str, value: object) -> None:
-    """Track explicit None only after successful native descriptor assignment."""
+def _observe_native(error: BaseException) -> None:
+    """Checkpoint a successfully observed native mutation or argument assignment."""
+    if isinstance(error, OSError):
+        entry = _native_entry(error)
+        entry.arguments = id(error.args)
+        entry.values = [id(value) for value in _native_values(error)]
+
+
+def _record_native_none(
+    error: BaseException,
+    owner: type,
+    name: str,
+    *,
+    present: bool | None,
+    origin: _PresenceOrigin = "assigned",
+) -> None:
+    """Record established presence and provenance, or discard uncertain evidence."""
+    entry = _native_entry(error)
+    key = owner, name
+    if present is None:
+        entry.fields.pop(key, None)
+        entry.origins.pop(key, None)
+    else:
+        entry.fields[key] = present
+        entry.origins[key] = origin
+
+
+def _record_assignment(error: BaseException, name: str, value: object) -> None:  # noqa: ARG001 - Presence is independent of the assigned value.
+    """Record all successful native writes, including non-None assignments."""
     owner = _native_owner(type(error), name)
     if owner is not None:
-        _record_native_none(error, owner, name, present=True if value is None else None)
+        _record_native_none(error, owner, name, present=True)
 
 
 def _capture_native_constructor(error: BaseException) -> None:
-    """Distinguish native initialization from explicit filename assignments."""
+    """Verify only unambiguous primitive constructor state at portable checkpoints."""
     if not isinstance(error, OSError):
         return
-    arguments = cast("tuple[object, ...]", OSError.__reduce__(error)[1])
-    if not 2 <= len(arguments) <= 5:  # noqa: PLR2004 - OSError's native constructor arity.
-        _reconcile_native_reset(error, arguments)
-        return
-    native_values = [
-        vars(OSError)[name].__get__(error, type(error))
-        for name in ("errno", "strerror", "filename", "filename2")
-    ]
-    errno, strerror, _, _ = native_values
-    if not any(
-        value is None and argument is value
-        for argument, value in zip(arguments[:2], (errno, strerror), strict=True)
+    values = _native_values(error)
+    entry = _native_entry(error)
+    if entry.arguments and (
+        entry.arguments != id(error.args)
+        or entry.values != [id(value) for value in values]
     ):
-        return
-    _clear_populated_native(error, native_values)
-    fields = _native_fields(error)
-    if all(
-        value is not None or fields.get((OSError, name)) is True
-        for name, value in (("errno", errno), ("strerror", strerror))
-    ):
-        return
-    # Native construction ignores None filenames, but populates errno/strerror.
-    # Check plain native formatting without invoking user-defined str/repr hooks.
-    plain = all(
-        type(value) in {type(None), int, str, bytes, float, bool}
-        for value in (*arguments, *native_values)
-    )
-    if not plain and not any(
-        value is not None and argument is value
-        for argument, value in zip(arguments[:2], (errno, strerror), strict=True)
-    ):
-        return
-    if plain and not _matches_native_format(error, arguments, fields):
-        fields = _reinitialized_native_fields(fields)
-        if not _matches_native_format(error, arguments, fields):
-            return
-    for name, value in (("errno", errno), ("strerror", strerror)):
-        if value is None and (OSError, name) not in fields:
-            _record_native_none(error, OSError, name, present=True)
-
-
-def _reconcile_native_reset(
-    error: OSError,
-    arguments: tuple[object, ...],  # garuff: ignore[GAC005] - Native reduction tuple.
-) -> None:
-    """Clear stale populated None records after a nonnative reinitialization."""
-    fields = _native_fields(error)
+        # Constructor inference depends on the observed checkpoint. Explicit writes
+        # remain independent unless a changed descriptor proves they were overwritten.
+        for key, origin in list(entry.origins.items()):
+            owner, name = key
+            changed = owner is OSError and entry.values[
+                _NATIVE_NAMES.index(name)
+            ] != id(values[_NATIVE_NAMES.index(name)])
+            if origin != "assigned" or changed:
+                entry.fields.pop(key, None)
+                entry.origins.pop(key, None)
+    for name, value in zip(_NATIVE_NAMES, values, strict=True):
+        if value is not None and entry.fields.get((OSError, name)) is False:
+            _record_native_none(error, OSError, name, present=None)
     candidates = [
-        name for name in ("errno", "strerror") if fields.get((OSError, name)) is True
+        name
+        for name, value in zip(_NATIVE_NAMES[:2], values[:2], strict=True)
+        if value is None and (OSError, name) not in entry.fields
     ]
     if not candidates:
+        _observe_native(error)
         return
-    values = [
-        vars(OSError)[name].__get__(error, type(error))
-        for name in ("errno", "strerror", "filename", "filename2")
-    ]
-    if any(value is not None for value in values[:2]) or not all(
-        type(value) in {type(None), int, str, bytes, float, bool}
-        for value in (*arguments, *values)
-    ):
-        return
-    if not _matches_native_format(error, arguments, fields):
+    arguments = error.args
+    # A multi-argument fallback renders as a tuple, never as a native message.
+    # Single arguments can collide with native messages; opaque values can run hooks.
+    safe = (
+        len(arguments) >= _NATIVE_MIN_ARGS
+        and all(type(value) in _PLAIN_NATIVE for value in (*arguments, *values))
+        and all(value is None for value in values[2:])
+        and not any(entry.fields.get((OSError, name)) for name in _NATIVE_NAMES[2:])
+        and not any(
+            entry.fields.get((OSError, name)) is False for name in _NATIVE_NAMES[:2]
+        )
+    )
+    if safe and _matches_native_format(error):
         for name in candidates:
-            _record_native_none(error, OSError, name, present=None)
+            _record_native_none(
+                error, OSError, name, present=True, origin="constructor"
+            )
+    _observe_native(error)
 
 
-def _clear_populated_native(error: BaseException, native_values: list[object]) -> None:
-    """Drop stale overrides when native reinitialization populated a field."""
-    for name, value in zip(
-        ("errno", "strerror", "filename", "filename2"), native_values, strict=True
-    ):
-        if value is not None:
-            _record_native_none(error, OSError, name, present=None)
+def _matches_native_format(error: OSError) -> bool:
+    """Distinguish native fields from the unambiguous primitive tuple fallback."""
+    return OSError.__str__(error) != BaseException.__str__(error)
 
 
-def _reinitialized_native_fields(
-    fields: dict[tuple[type, str], bool],
-) -> dict[tuple[type, str], bool]:
-    """Test whether later native initialization replaced recorded deletions."""
-    return {
-        field: present
-        for field, present in fields.items()
-        if present or field not in {(OSError, "errno"), (OSError, "strerror")}
-    }
+def _set_error_attribute(
+    error: BaseException,
+    name: str,
+    value: object,
+    setter: "Callable[[str, object], None]",
+) -> None:
+    """Capture before a normal write and checkpoint only after it succeeds."""
+    tracked = name == "args" or _native_owner(type(error), name) is not None
+    if tracked:
+        _capture_native_constructor(error)
+    setter(name, value)
+    _record_assignment(error, name, value)
+    if tracked:
+        _observe_native(error)
 
 
-def _matches_native_format(
-    error: OSError,
-    arguments: tuple[object, ...],  # garuff: ignore[GAC005] - Native reduction tuple.
-    fields: dict[tuple[type, str], bool],
-) -> bool:
-    """Confirm plain native initialization, including recorded field overrides."""
-    probe = OSError(*arguments)
-    for name in ("errno", "strerror", "filename", "filename2"):
-        descriptor = vars(OSError)[name]
-        value = descriptor.__get__(error, type(error))
-        if value is not None:
-            descriptor.__set__(probe, value)
-    for (owner, name), present in fields.items():
-        descriptor = vars(owner)[name]
-        if present:
-            descriptor.__set__(probe, None)
-        else:
-            descriptor.__delete__(probe)
-    return OSError.__str__(probe) == OSError.__str__(error)
+def _delete_error_attribute(
+    error: BaseException, name: str, deleter: "Callable[[str], None]"
+) -> None:
+    """Record native deletion after successful normal descriptor dispatch."""
+    owner = _native_owner(type(error), name)
+    if name == "args" or owner is not None:
+        _capture_native_constructor(error)
+    deleter(name)
+    if owner is not None:
+        _record_native_none(error, owner, name, present=False, origin="deleted")
+        _observe_native(error)
 
 
 def _error_state(error: BaseException) -> _ErrorState:
@@ -224,7 +232,7 @@ def _error_state(error: BaseException) -> _ErrorState:
     python_state = error.__getstate__() if custom_getter else error.__dict__
     _capture_native_constructor(error)
     recorded = _native_fields(error)
-    presence: list[tuple[type, str, bool]] = []
+    presence: list[tuple[type, str, bool, _PresenceOrigin]] = []
     slots: list[tuple[type, str, object]] = []
     for owner in type(error).__mro__:
         native = owner.__module__ == "builtins"
@@ -238,7 +246,14 @@ def _error_state(error: BaseException) -> _ErrorState:
                     continue
                 if native:
                     if (owner, name) in recorded:
-                        presence.append((owner, name, recorded[owner, name]))
+                        presence.append(
+                            (
+                                owner,
+                                name,
+                                recorded[owner, name],
+                                _native_entry(error).origins[owner, name],
+                            )
+                        )
                     if value is None and not recorded.get((owner, name), False):
                         continue
                 slots.append((owner, name, value))
@@ -285,12 +300,17 @@ def _apply_python_state(error: BaseException, state: object) -> None:
 def _apply_error_state(error: BaseException, state: _ErrorState) -> None:
     """Restore memoized arguments and slots before invoking Python state hooks."""
     BaseException.__init__(error, *state.args)
-    for owner, name, present in state.native_presence:
-        _record_native_none(error, owner, name, present=present)
+    for owner, name, present, origin in state.native_presence:
+        _record_native_none(error, owner, name, present=present, origin=origin)
     for owner, name, value in state.slots:
         vars(owner)[name].__set__(error, value)
-        if owner.__module__ == "builtins" and value is None:
+        if (
+            owner.__module__ == "builtins"
+            and value is None
+            and (owner, name) not in _native_fields(error)
+        ):
             _record_native_none(error, owner, name, present=True)
+    _observe_native(error)
     _apply_python_state(error, state.python_state)
 
 
@@ -399,6 +419,7 @@ class ChapterParseError(ValueError):
         self.guid = guid
         context = f" [{source or 'input'}; GUID={guid or '-'}]"
         super().__init__(message + context)
+        _capture_native_constructor(self)
 
     # Pickle reconstruction uses the immutable protocol tuple.
     def __reduce__(self) -> tuple[object, ...]:  # garuff: ignore[GAC005]
@@ -415,19 +436,11 @@ class ChapterParseError(ValueError):
 
     def __setattr__(self, name: str, value: object) -> None:
         """Record successful explicit assignments to native None fields."""
-        if name == "args" or _native_owner(type(self), name) is not None:
-            _capture_native_constructor(self)
-        super().__setattr__(name, value)
-        _record_assignment(self, name, value)
+        _set_error_attribute(self, name, value, super().__setattr__)
 
     def __delattr__(self, name: str) -> None:
         """Clear native presence records only after successful deletion."""
-        if name == "args" or _native_owner(type(self), name) is not None:
-            _capture_native_constructor(self)
-        super().__delattr__(name)
-        owner = _native_owner(type(self), name)
-        if owner is not None:
-            _record_native_none(self, owner, name, present=False)
+        _delete_error_attribute(self, name, super().__delattr__)
 
 
 class ChapterFetchError(Exception):
@@ -439,6 +452,7 @@ class ChapterFetchError(Exception):
         self.message = message
         self.url = url
         super().__init__(f"{message} [{url}]")
+        _capture_native_constructor(self)
 
     # Pickle reconstruction uses the immutable protocol tuple.
     def __reduce__(self) -> tuple[object, ...]:  # garuff: ignore[GAC005]
@@ -455,19 +469,11 @@ class ChapterFetchError(Exception):
 
     def __setattr__(self, name: str, value: object) -> None:
         """Record successful explicit assignments to native None fields."""
-        if name == "args" or _native_owner(type(self), name) is not None:
-            _capture_native_constructor(self)
-        super().__setattr__(name, value)
-        _record_assignment(self, name, value)
+        _set_error_attribute(self, name, value, super().__setattr__)
 
     def __delattr__(self, name: str) -> None:
         """Clear native presence records only after successful deletion."""
-        if name == "args" or _native_owner(type(self), name) is not None:
-            _capture_native_constructor(self)
-        super().__delattr__(name)
-        owner = _native_owner(type(self), name)
-        if owner is not None:
-            _record_native_none(self, owner, name, present=False)
+        _delete_error_attribute(self, name, super().__delattr__)
 
 
 class ChapterHTTPError(ChapterFetchError):

@@ -151,7 +151,7 @@ def test_opaque_arguments_do_not_infer_unset_native_fields(operation, native_ini
 
 
 @pytest.mark.parametrize("operation", _OPERATIONS)
-def test_opaque_formatters_never_run_for_unset_or_populated_native_state(operation):
+def test_opaque_formatters_never_run_for_unset_or_unknown_native_state(operation):
     unset = _NativeError("failure", url="u")
     unset.args = (None, _Opaque())
     restored = _roundtrip(unset, operation)
@@ -159,7 +159,7 @@ def test_opaque_formatters_never_run_for_unset_or_populated_native_state(operati
     populated = _NativeError("failure", url="u")
     OSError.__init__(populated, None, _Opaque())
     restored = _roundtrip(populated, operation)
-    assert errors._native_fields(restored)[OSError, "errno"]  # noqa: SLF001 - Genuine native initialization has independent descriptor evidence.
+    assert not errors._native_fields(restored).get((OSError, "errno"))  # noqa: SLF001 - Unobserved opaque initialization cannot prove None presence.
     assert isinstance(restored.strerror, _Opaque)
 
 
@@ -241,7 +241,11 @@ def test_url_whitespace_is_encoded_and_retained_on_reparse(whitespace, title_kin
 def test_cached_raw_closing_materializes_once(monkeypatch):
     text = "<b\n>0:00 Intro<script>x</script></b>"
     cache = markup._TagCache(text, recover_chapters=True)  # noqa: SLF001 - Exercise cache consumption.
-    assert cache.balanced(cache.token(0))
+    assert cache.balanced(
+        cache.token(0),
+        visible=markup._ChapterPrefix(),  # noqa: SLF001 - Supply explicit visible context.
+        source=markup._SourcePrefix(),  # noqa: SLF001 - Supply explicit recovery context.
+    )
     calls = Counter()
     original = markup._TokenChunk.token  # noqa: SLF001 - Count materializations.
 

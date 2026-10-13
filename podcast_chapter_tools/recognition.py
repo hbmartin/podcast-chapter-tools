@@ -88,9 +88,11 @@ class _ChapterPrefix:
         elif not (char.isdigit() or (self.state == "time" and char == ".")):
             self.state = "done"
 
-    def feed(self, text: str, start: int = 0) -> None:
+    def feed(self, text: str, start: int = 0, end: int | None = None) -> None:
         """Consume each prefix character once, stopping after its classification."""
-        for index in range(start, len(text)):
+        if self.state == "done":
+            return
+        for index in range(start, len(text) if end is None else end):
             if self.state == "done":
                 break
             self._character(text[index])

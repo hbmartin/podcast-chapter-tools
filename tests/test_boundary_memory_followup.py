@@ -386,7 +386,7 @@ text = '0:00 Intro <b\\n>1:00 Next ' + '<b>' * ({size} // 3) + '\\n2:00 End'
 tracemalloc.start()
 if {lookahead!r}:
     cache = markup._TagCache(text, recover_chapters=True)
-    assert not cache.balanced(cache.token(text.index('<')))
+    assert not cache.balanced(cache.token(text.index('<')), visible=markup._ChapterPrefix(), source=markup._SourcePrefix())
 else:
     result = parse_description_chapters(text)
     assert len(result.chapters) == 3

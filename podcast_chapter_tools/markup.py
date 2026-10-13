@@ -4,10 +4,9 @@ import re
 from array import array
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
-from typing import Self
 from unicodedata import category
 
 from .recognition import _ChapterPrefix, chapter_timestamp_end
@@ -78,6 +77,14 @@ _VOID = frozenset(
 # Bounded alternatives cannot repeatedly scan an unbounded entity suffix.
 _ENTITY = re.compile(
     r"&(?:#[0-9]{1,10};?|#[xX][0-9a-fA-F]{1,8};?|[A-Za-z][A-Za-z0-9]{0,31};?)"
+)
+_DATA_EVENT = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]|" + _ENTITY.pattern)
+_CONTEXT_BOUNDARY = re.compile(
+    r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]|"
+    r"&#(?:[0-9]{1,10}|[xX][0-9a-fA-F]{1,8});?|&NewLine;"
+)
+_LINE_BREAKS = frozenset(
+    {"\r\n", "\r", "\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
 )
 _HTML_SPACE = "\t\n\f\r "
 _LINE_SPACE = "\t\f "
@@ -198,6 +205,11 @@ def _tag_boundary(
     match = _TAG_NAME.match(text, start)
     if match is None:
         return None, start, True
+    delimiter = text[match.end() : match.end() + 1]
+    if delimiter == ">":
+        return match, match.end(), False
+    if delimiter in {"'", '"'}:
+        return match, match.end(), True
     end, nested = _tag_end(text, match.end(), recover_chapters=recover_chapters)
     malformed = match.end() < len(text) and text[match.end()] not in _TAG_NAME_END
     return match, end, nested or malformed
@@ -242,6 +254,21 @@ class _TagToken:
     multiline: bool = False
     comment: bool = False
     balanced: bool = False
+
+    @property
+    def following(self) -> int:
+        """Return the next source position for an unchanged lexical interpretation."""
+        return self.end + 1 if self.complete else max(self.end, self.start + 1)
+
+    @property
+    def before(self) -> bool:
+        """Lexical records do not establish contextual leading boundaries."""
+        return False
+
+    @property
+    def after(self) -> bool:
+        """Lexical records do not establish contextual trailing boundaries."""
+        return False
 
 
 def _terminator(text: str, newline: int) -> int | None:
@@ -381,13 +408,6 @@ class _TokenStore:
                 return
             self._advance()
 
-    def peek(self) -> _TagToken | None:
-        """Inspect the next boundary without advancing the consumer cursor."""
-        if self.read < self.length:
-            block, offset = self._location(self.read)
-            return block.token(offset)
-        return None
-
     def consume(self, start: int, *, raw: str | None = None) -> _TagToken | None:
         """Select a packed record before materializing and consuming it once."""
         self.discard_before(start)
@@ -418,7 +438,7 @@ class _TagCache:
         self.raw: str | None = None
         self.shape: _TagShape | None = None
         self._initial: _TagToken | None = None
-        self.context: _Lines | None = None
+        self.context: _RecoveryContext | None = None
         self.raw_absent: dict[str, int] = {}
 
     def token(self, start: int) -> _TagToken:
@@ -443,10 +463,11 @@ class _TagCache:
             return _TagToken(start=start, end=start)
         cut = end if end < len(text) and text[end] in "\r\n" else None
         formatted = None
+        multiline = self.recover and (cut is not None or _has_newline(text, start, end))
         if self.recover:
             if cut is not None:
                 formatted = _terminator(text, cut)
-            elif end < len(text):
+            elif multiline and end < len(text):
                 newline = max(
                     text.rfind("\r", start, end), text.rfind("\n", start, end)
                 )
@@ -454,13 +475,9 @@ class _TagCache:
                     candidate = _terminator(text, newline)
                     # Only the scanned, unquoted terminator can complete this tag.
                     formatted = candidate if candidate == end else None
-        if (
-            formatted is not None
-            and text[match.end() : match.end() + 1] in _TAG_NAME_END
-        ):
+        if formatted is not None and not nested:
             end = formatted
         complete = end < len(text) and text[end] == ">" and not nested
-        multiline = self.recover and _has_newline(text, start, end)
         self_closing = False
         if complete and text[end - 1 : end + 1] == "/>":
             self.shape = self.shape or _TagShape()
@@ -473,7 +490,7 @@ class _TagCache:
             complete=complete,
             self_closing=self_closing,
             cut=cut,
-            formatted=formatted is not None,
+            formatted=formatted is not None and complete,
             multiline=multiline,
         )
 
@@ -494,7 +511,7 @@ class _TagCache:
 
     def _next(
         self,
-    ) -> tuple[int, _TagToken] | None:  # garuff: ignore[GAC005] - Scan result.
+    ) -> tuple[int, _TagToken, bool] | None:  # garuff: ignore[GAC005] - Scan result.
         """Advance the lookahead frontier past comments and suppressed raw text."""
         raw_region = self.raw
         if raw_region is not None:
@@ -512,20 +529,24 @@ class _TagCache:
             self._initial = None
         if self.context is not None:
             if raw_region is None:
-                self.context.source_data(self.text[self.cursor : token.start])
-            token = self.context.classify_raw_opening(token)
-            self.context.scan_token(self.text, token)
+                self.context.data(self.text, self.cursor, token.start)
+            event = _recovery_event(
+                token,
+                self.context.visible,
+                self.context.source,
+                protected=token.balanced or token.self_closing or token.name in _VOID,
+                raw_closing=raw_region is not None and token.end < len(self.text),
+            )
+            self.context.consume(self.text, token, event)
+        else:
+            event = _recovery_event(token, None, None, protected=False)
         position = self.tokens.append(token)
-        self.cursor = (
-            token.end + 1
-            if token.complete or token.comment or token.end == token.start
-            else token.end
-        )
-        if token.complete and not token.closing and not token.self_closing:
+        self.cursor = event.following
+        if event.complete and not token.closing and not token.self_closing:
             raw = _RAW_START.match(self.text, token.start)
             if raw is not None:
                 self.raw = raw[1].lower()
-        return position, token
+        return position, token, event.complete
 
     def _begin_lookahead(
         self,
@@ -537,28 +558,33 @@ class _TagCache:
         if self.cursor <= opening.start:
             self.cursor = opening.start
             self._initial = opening
-            if self.recover:
-                self.context = _Lines.context_snapshot(visible, source)
+            if self.recover and (visible is not None or source is not None):
+                self.context = _RecoveryContext(visible, source)
+            else:
+                self.context = None
 
     def balanced(
         self,
         opening: _TagToken,
         *,
-        visible: _ChapterPrefix | None = None,
-        source: "_SourcePrefix | None" = None,
+        visible: _ChapterPrefix | None,
+        source: "_SourcePrefix | None",
     ) -> bool:
         """Look ahead only as far as needed, retaining nested matching results."""
+        if not opening.complete:
+            return False
         if opening.self_closing or opening.name in _VOID or opening.balanced:
             return True
         self._begin_lookahead(opening, visible, source)
         while (record := self._next()) is not None:
-            position, token = record
-            if token.comment or (
-                not token.complete
-                and not (
-                    token.closing and token.cut is not None and token.name in _RAW_END
-                )
+            position, token, interpreted_complete = record
+            if (
+                token.name in _RAW_END
+                and not token.closing
+                and not interpreted_complete
             ):
+                continue
+            if token.comment or not (token.complete or interpreted_complete):
                 continue
             if token.closing:
                 if self.stack and self.tokens.name(self.stack[-1]) == token.name:
@@ -595,23 +621,154 @@ class _SourcePrefix:
             self.prefix.feed("<")
 
 
-def _classify_raw_opening(
-    token: _TagToken, visible: _ChapterPrefix | None, source: _SourcePrefix | None
-) -> _TagToken:
-    """Apply the same chapter-context raw recovery during lookahead and parsing."""
-    chapter = (visible is not None and visible.chapter) or (
-        source is not None and source.prefix.chapter
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _RecoveryEvent:
+    """Contextual interpretation that never replaces lexical cache records."""
+
+    end: int
+    following: int
+    complete: bool
+    before: bool = False
+    after: bool = False
+
+
+def _recovery_event(
+    token: _TagToken,
+    visible: _ChapterPrefix | None,
+    source: _SourcePrefix | None,
+    *,
+    protected: bool,
+    raw_closing: bool = False,
+) -> _TagToken | _RecoveryEvent:
+    """Resolve literal recovery and formatter boundaries for both consumers."""
+    if token.complete and not token.formatted:
+        return token
+    chapter = bool(
+        (visible is not None and visible.chapter)
+        or (source is not None and source.prefix.chapter)
     )
-    if (
-        token.formatted
-        and token.complete
-        and not token.closing
-        and token.name in _RAW_END
-        and token.cut is not None
-        and chapter
-    ):
-        return replace(token, end=token.cut, complete=False)
-    return token
+    boundary = visible is not None and (visible.chapter or visible.state == "leading")
+    complete = token.complete
+    before = False
+    if raw_closing:
+        complete = True
+    elif complete and token.formatted and not token.closing:
+        if token.name in _RAW_END:
+            complete = not (chapter and token.cut is not None)
+        elif boundary and protected:
+            before = True
+        elif chapter and token.cut is not None:
+            complete = False
+    end = token.end if complete or token.cut is None else token.cut
+    following = (
+        end
+        if raw_closing and token.cut == end
+        else end + 1
+        if complete
+        else max(end, token.start + 1)
+    )
+    return _RecoveryEvent(
+        end=end,
+        following=following,
+        complete=complete,
+        before=before,
+        after=bool(
+            complete
+            and token.closing
+            and token.formatted
+            and visible is not None
+            and visible.chapter
+        ),
+    )
+
+
+def _data_events(text: str, start: int, end: int) -> Iterator[tuple[int, int, bool]]:
+    """Share literal ranges and bounded entity/line events without slicing runs."""
+    cursor = start
+    for match in _DATA_EVENT.finditer(text, start, end):
+        if cursor < match.start():
+            yield cursor, match.start(), False
+        yield match.start(), match.end(), True
+        cursor = match.end()
+    if cursor < end:
+        yield cursor, end, False
+
+
+class _RecoveryContext:
+    def __init__(
+        self, visible: _ChapterPrefix | None, source: _SourcePrefix | None
+    ) -> None:
+        """Retain only incremental physical and visible prefix state."""
+        self.visible = _ChapterPrefix()
+        self.source = _SourcePrefix()
+        if visible is not None:
+            vars(self.visible).update(vars(visible))
+        if source is not None:
+            vars(self.source.prefix).update(vars(source.prefix))
+
+    def boundary(self) -> None:
+        """Reset both prefix views at the shared visible boundary."""
+        self.visible.reset()
+        self.source.prefix.reset()
+
+    def _visible_data(self, text: str, start: int, end: int) -> None:
+        """Decode entities only until the visible prefix is decided."""
+        if self.visible.state == "done":
+            return
+        if start < end and text[start] != "&":
+            self.visible.feed(text, start, start + 1)
+            start += 1
+        while start < end and self.visible.state != "done":
+            entity_start = text.find("&", start, end)
+            following = end if entity_start < 0 else entity_start
+            self.visible.feed(text, start, following)
+            if self.visible.state == "done" or entity_start < 0:
+                return
+            entity = _ENTITY.match(text, entity_start, end)
+            if entity is None:
+                self.visible.feed("&")
+                start = entity_start + 1
+            else:
+                self.visible.feed(unescape(entity[0]))
+                start = entity.end()
+
+    def data(self, text: str, start: int, end: int) -> None:
+        """Inspect only undecided prefixes and potential boundary events."""
+        if start == end:
+            return
+        if end - start <= 2 and text[start:end] in _LINE_BREAKS:  # noqa: PLR2004 - CRLF is the only two-character boundary.
+            self.boundary()
+            return
+        cursor = start
+        for match in _CONTEXT_BOUNDARY.finditer(text, start, end):
+            self.source.prefix.feed(text, cursor, match.start())
+            self._visible_data(text, cursor, match.start())
+            if text[match.start()] == "&":
+                entity = unescape(match[0])
+                self.source.prefix.feed(match[0])
+                if entity in {"\r", "\n", "\r\n"}:
+                    self.boundary()
+                else:
+                    self.visible.feed(entity)
+            else:
+                self.boundary()
+            cursor = match.end()
+        self.source.prefix.feed(text, cursor, end)
+        self._visible_data(text, cursor, end)
+
+    def consume(
+        self, text: str, token: _TagToken, event: _TagToken | _RecoveryEvent
+    ) -> None:
+        """Apply the shared interpretation without HTMLParser or text buffers."""
+        if not event.complete:
+            self.data(text, token.start, event.following)
+            return
+        if event.before:
+            self.boundary()
+        if token.multiline or self.source.prefix.state != "done":
+            self.source.tag(token)
+        if token.name in _BLOCKS or event.after:
+            self.boundary()
 
 
 def _supported_link(attrs: list[tuple[str, str | None]]) -> str | None:
@@ -627,7 +784,7 @@ def _generic_raw_parts(
     match = _RAW_END[tag].search(text, index)
     if match is None:
         return [(False, text[index:])], len(text)
-    _, end, _ = _tag_boundary(text, match.start())
+    end, _ = _tag_end(text, match.end())
     return _closing_parts(text, index, match.start(), end, tag=tag)
 
 
@@ -716,30 +873,34 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
     while index < len(text):
         start = text.find("<", index)
         data = text[index:] if start < 0 else text[index:start]
-        source.data(data)
+        if source_context is None:
+            source.data(data)
         yield False, data
         if start < 0:
             break
         visible = line_context() if line_context is not None else None
-        token = _classify_raw_opening(cache.token(start), visible, source)
-        chapter = bool(
-            (visible is not None and visible.chapter) or source.prefix.chapter
-        )
-        boundary = visible is not None and (
-            visible.chapter or visible.state == "leading"
-        )
-        complete = token.complete
-        if token.formatted and not token.closing and token.name not in _RAW_END:
-            if boundary and cache.balanced(token, visible=visible, source=source):
-                yield False, "\n"
-            elif chapter and token.cut is not None:
-                complete = False
-        if not complete:
-            end = token.cut if token.cut is not None else token.end
-            fragment = text[start:end] if end > start else "<"
-            source.data(fragment)
+        token = cache.token(start)
+        protected = False
+        if (
+            token.complete
+            and token.formatted
+            and not token.closing
+            and token.name not in _RAW_END
+        ):
+            boundary = visible is not None and (
+                visible.chapter or visible.state == "leading"
+            )
+            if boundary:
+                protected = cache.balanced(token, visible=visible, source=source)
+        event = _recovery_event(token, visible, source, protected=protected)
+        if event.before:
+            yield False, "\n"
+        if not event.complete:
+            fragment = text[start : event.end] if event.end > start else "<"
+            if source_context is None:
+                source.data(fragment)
             yield False, fragment
-            index = end if end > start else start + 1
+            index = event.following
             continue
         part = text[start : token.end + 1]
         source.tag(token)
@@ -748,12 +909,7 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
             continue
         yield True, part
         index = token.end + 1
-        if (
-            token.closing
-            and token.formatted
-            and visible is not None
-            and visible.chapter
-        ):
+        if event.after:
             yield False, "\n"
         raw = (
             _RAW_START.match(part)
@@ -829,63 +985,6 @@ class _Lines(HTMLParser):
         self._visible_length = 0
         self._hidden: str | None = None
 
-    @classmethod
-    def context_snapshot(
-        cls, visible: _ChapterPrefix | None, source: _SourcePrefix | None
-    ) -> Self:
-        """Clone only prefix state for forward lookahead without retaining text."""
-        context = cls(recover_chapters=True, collect_spans=False)
-        if visible is not None:
-            vars(context._prefix).update(vars(visible))
-        if source is not None and context._source is not None:
-            vars(context._source.prefix).update(vars(source.prefix))
-        return context
-
-    def source_data(self, data: str) -> None:
-        """Mirror normal physical and visible data events in the lookahead view."""
-        if not data or self._hidden:
-            return
-        if self._source is not None:
-            self._source.data(data)
-        self.handle_data(data)
-
-    def classify_raw_opening(self, token: _TagToken) -> _TagToken:
-        """Use shared raw-opening precedence with this view's prefix state."""
-        return _classify_raw_opening(token, self._prefix, self._source)
-
-    def scan_token(self, text: str, token: _TagToken) -> None:
-        """Advance the same visible parser through a cached or recovered token."""
-        chapter = self._prefix is not None and self._prefix.chapter
-        raw_closing = self._hidden == token.name and token.closing
-        if raw_closing and token.end < len(text):
-            if self._source is not None:
-                self._source.tag(token)
-            self.handle_endtag(token.name)
-        elif not token.complete:
-            self.source_data(text[token.start : token.end])
-            return
-        else:
-            if (
-                token.formatted
-                and not token.closing
-                and token.name not in _RAW_END
-                and self._prefix is not None
-                and (chapter or self._prefix.state == "leading")
-            ):
-                self.boundary()
-            if self._source is not None:
-                self._source.tag(token)
-            if token.comment:
-                return
-            if token.closing:
-                self.handle_endtag(token.name)
-            else:
-                self.handle_starttag(token.name, [])
-                if token.self_closing:
-                    self.handle_endtag(token.name)
-        if token.closing and token.formatted and chapter:
-            self.boundary()
-
     def line_context(self) -> _ChapterPrefix | None:
         """Expose the one incremental visible-prefix state to tag recovery."""
         return self._prefix
@@ -957,18 +1056,17 @@ class _Lines(HTMLParser):
         """Split visible data into lines and decode entities with source spans."""
         if self._hidden:
             return
-        for index, line in enumerate(data.splitlines(keepends=True)):
-            if index:
+        if data in _LINE_BREAKS:
+            self.boundary()
+            return
+        for start, end, special in _data_events(data, 0, len(data)):
+            if self._source is not None:
+                self._source.prefix.feed(data, start, end)
+            if special and data[start] != "&":
                 self.boundary()
-            part = line.rstrip("\r\n")
-            cursor = 0
-            for match in _ENTITY.finditer(part):
-                self._append(part[cursor : match.start()], part[cursor : match.start()])
-                self._append(match[0], unescape(match[0]))
-                cursor = match.end()
-            self._append(part[cursor:], part[cursor:])
-            if line.endswith(("\r", "\n")):
-                self.boundary()
+            else:
+                raw = data[start:end]
+                self._append(raw, unescape(raw) if special else raw)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         """Track block boundaries, suppressed content, and inline links."""
