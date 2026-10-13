@@ -85,7 +85,12 @@ def chapters_to_description(chapters: Iterable[ChapterInput]) -> str:
         data = _data(chapter)
         if not data.toc:
             continue
-        title = data.title or ""
+        title = (
+            (data.title or "")
+            .replace("\r\n", " ")
+            .replace("\r", " ")
+            .replace("\n", " ")
+        )
         line = f"{format_timestamp(data.start)} {title}"
         if data.url is not None and data.url not in title:
             line += f" {data.url}"

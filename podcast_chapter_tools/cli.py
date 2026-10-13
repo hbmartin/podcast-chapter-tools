@@ -157,7 +157,9 @@ def main(argv: list[str] | None = None) -> int:
 
         rendered = _emit(chapters, args.to, args.indent)
         if args.output is not None:
-            args.output.write_text(rendered + "\n", encoding="utf-8")
+            output_text = rendered + "\n"
+            output_text.encode("utf-8")  # Validate before opening/truncating the file.
+            args.output.write_text(output_text, encoding="utf-8")
         else:
             print(rendered)
     except (OSError, ValueError, ImportError, ChapterFetchError) as exc:

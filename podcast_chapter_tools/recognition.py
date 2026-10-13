@@ -39,10 +39,15 @@ def line_timestamp_start(text: str, index: int = 0) -> int | None:
 
 def begins_chapter_line(text: str, index: int) -> bool:
     """Detect a timestamp candidate without scanning past its numeric run."""
+    return chapter_timestamp_end(text, index) is not None
+
+
+def chapter_timestamp_end(text: str, index: int) -> int | None:
+    """Return a recognized candidate's end for bounded continuation scanning."""
     start = line_timestamp_start(text, index)
     if start is None:
-        return False
+        return None
     end = start
     while end < len(text) and (text[end].isdigit() or text[end] in ":."):
         end += 1
-    return ":" in text[start:end]
+    return end if ":" in text[start:end] else None

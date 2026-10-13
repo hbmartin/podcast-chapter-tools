@@ -208,11 +208,12 @@ def _encoded_feed_index(raw: bytes, charset: str, source: str) -> FeedChapterInd
     except ChapterParseError as exc:
         # Structural XML errors do not authorize charset fallback. Decode errors do.
         if codec != "iso8859-1" and isinstance(exc.__cause__, ElementTree.ParseError):
-            decoder = codecs.getincrementaldecoder(codec)(errors="strict")
-            view = memoryview(raw)
-            for offset in range(0, len(raw), _ENCODING_CHECK_CHUNK):
-                decoder.decode(view[offset : offset + _ENCODING_CHECK_CHUNK])
-            decoder.decode(b"", final=True)
+            chunks = (
+                raw[offset : offset + _ENCODING_CHECK_CHUNK]
+                for offset in range(0, len(raw), _ENCODING_CHECK_CHUNK)
+            )
+            for _ in codecs.iterdecode(chunks, codec, errors="strict"):
+                pass
         raise
 
 

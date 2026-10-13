@@ -94,25 +94,38 @@ def _title(line: DescriptionLine, start: int, end: int) -> str:
     return inline_fragment(line.raw[raw_start:raw_end]).strip()
 
 
+def _validated_start(
+    token: str, entry_index: int, issues: list[ChapterIssue]
+) -> float | None:
+    """Convert only timestamp failures into invalid-start diagnostics."""
+    try:
+        return parse_timestamp(token)
+    except (ValueError, OverflowError) as exc:
+        issues.append(ChapterIssue(entry_index, "start", "invalid_start", str(exc)))
+        return None
+
+
 def _chapter_candidate(
     line: DescriptionLine,
-    title_start: int,
-    title_end: int,
+    title_bounds: tuple[int, int],
     token: str,
     *,
     incidental: bool,
-) -> tuple[float, str, str] | None:
+    validation: tuple[int, list[ChapterIssue]],
+) -> tuple[float | None, str, str] | None:
     """Validate timestamps before titles, except for titleless lenient prose."""
     title = None
     text_title = ""
     if incidental:
-        title = _title(line, title_start, title_end)
+        title = _title(line, *title_bounds)
         text_title = plain_text(title)
         if not text_title:
             return None
-    start = parse_timestamp(token)
+    start = _validated_start(token, *validation)
+    if start is None:
+        return None, "", ""
     if title is None:
-        title = _title(line, title_start, title_end)
+        title = _title(line, *title_bounds)
         text_title = plain_text(title)
     return start, title, text_title
 
@@ -142,23 +155,19 @@ def parse_description_chapters(  # noqa: PLR0913 - Independent public parsing op
             title_end = (
                 matches[index + 1][0] if index + 1 < len(matches) else len(line.text)
             )
-            try:
-                candidate = _chapter_candidate(
-                    line,
-                    end,
-                    title_end,
-                    token,
-                    incidental=mode == "lenient" and not explicit,
-                )
-            except (ValueError, OverflowError) as exc:
-                issues.append(
-                    ChapterIssue(entry_index, "start", "invalid_start", str(exc))
-                )
-                entry_index += 1
-                continue
+            candidate = _chapter_candidate(
+                line,
+                (end, title_end),
+                token,
+                incidental=mode == "lenient" and not explicit,
+                validation=(entry_index, issues),
+            )
             if candidate is None:
                 continue
             start, title, text_title = candidate
+            if start is None:
+                entry_index += 1
+                continue
             url_match = _re_url.search(title)
             enclosing_url = line.url_at(end)
             url = unescape(url_match[0]) if url_match else enclosing_url
