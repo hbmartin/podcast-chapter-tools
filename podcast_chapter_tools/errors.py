@@ -113,6 +113,7 @@ def _capture_native_constructor(error: BaseException) -> None:
         return
     arguments = cast("tuple[object, ...]", OSError.__reduce__(error)[1])
     if not 2 <= len(arguments) <= 5:  # noqa: PLR2004 - OSError's native constructor arity.
+        _reconcile_native_reset(error, arguments)
         return
     native_values = [
         vars(OSError)[name].__get__(error, type(error))
@@ -137,6 +138,11 @@ def _capture_native_constructor(error: BaseException) -> None:
         type(value) in {type(None), int, str, bytes, float, bool}
         for value in (*arguments, *native_values)
     )
+    if not plain and not any(
+        value is not None and argument is value
+        for argument, value in zip(arguments[:2], (errno, strerror), strict=True)
+    ):
+        return
     if plain and not _matches_native_format(error, arguments, fields):
         fields = _reinitialized_native_fields(fields)
         if not _matches_native_format(error, arguments, fields):
@@ -144,6 +150,31 @@ def _capture_native_constructor(error: BaseException) -> None:
     for name, value in (("errno", errno), ("strerror", strerror)):
         if value is None and (OSError, name) not in fields:
             _record_native_none(error, OSError, name, present=True)
+
+
+def _reconcile_native_reset(
+    error: OSError,
+    arguments: tuple[object, ...],  # garuff: ignore[GAC005] - Native reduction tuple.
+) -> None:
+    """Clear stale populated None records after a nonnative reinitialization."""
+    fields = _native_fields(error)
+    candidates = [
+        name for name in ("errno", "strerror") if fields.get((OSError, name)) is True
+    ]
+    if not candidates:
+        return
+    values = [
+        vars(OSError)[name].__get__(error, type(error))
+        for name in ("errno", "strerror", "filename", "filename2")
+    ]
+    if any(value is not None for value in values[:2]) or not all(
+        type(value) in {type(None), int, str, bytes, float, bool}
+        for value in (*arguments, *values)
+    ):
+        return
+    if not _matches_native_format(error, arguments, fields):
+        for name in candidates:
+            _record_native_none(error, OSError, name, present=None)
 
 
 def _clear_populated_native(error: BaseException, native_values: list[object]) -> None:
@@ -384,14 +415,14 @@ class ChapterParseError(ValueError):
 
     def __setattr__(self, name: str, value: object) -> None:
         """Record successful explicit assignments to native None fields."""
-        if _native_owner(type(self), name) is not None:
+        if name == "args" or _native_owner(type(self), name) is not None:
             _capture_native_constructor(self)
         super().__setattr__(name, value)
         _record_assignment(self, name, value)
 
     def __delattr__(self, name: str) -> None:
         """Clear native presence records only after successful deletion."""
-        if _native_owner(type(self), name) is not None:
+        if name == "args" or _native_owner(type(self), name) is not None:
             _capture_native_constructor(self)
         super().__delattr__(name)
         owner = _native_owner(type(self), name)
@@ -424,14 +455,14 @@ class ChapterFetchError(Exception):
 
     def __setattr__(self, name: str, value: object) -> None:
         """Record successful explicit assignments to native None fields."""
-        if _native_owner(type(self), name) is not None:
+        if name == "args" or _native_owner(type(self), name) is not None:
             _capture_native_constructor(self)
         super().__setattr__(name, value)
         _record_assignment(self, name, value)
 
     def __delattr__(self, name: str) -> None:
         """Clear native presence records only after successful deletion."""
-        if _native_owner(type(self), name) is not None:
+        if name == "args" or _native_owner(type(self), name) is not None:
             _capture_native_constructor(self)
         super().__delattr__(name)
         owner = _native_owner(type(self), name)

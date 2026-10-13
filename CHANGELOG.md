@@ -130,6 +130,11 @@ change as described below.
   consumed segments, and keep dense unbalanced markup within allocation bounds.
   Generic stripping and title processing skip recovery caches and token objects.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
+  Quotes directly after tag names remain literal rather than starting attributes.
+  Lookahead shares contextual raw-opening classification with normal processing,
+  preventing unrelated earlier markup from hiding later tags or chapters. Raw
+  closing absence requires a searched range; cached tokens are consumed once.
+  Unfinished comments retain their complete remainder literally across both paths.
   Generic HTML stripping does not apply this recovery; recovered title fragments
   remain literal.
   Arbitrary tags and multiline attributes remain supported. Script/style handling
@@ -151,10 +156,14 @@ change as described below.
   while parsing results retain literal titles. Rendered URL fields percent-encode
   all such boundaries, using UTF-8 for Unicode separators, preventing chapter-line
   injection without changing parsed data or existing percent escapes. Raw angle
-  brackets and quotes are percent-encoded; ampersands are HTML-escaped so URL
+  brackets, quotes, and all Unicode whitespace (including spaces and tabs) are
+  percent-encoded; ampersands are HTML-escaped so URL
   entities and tags cannot introduce chapters while query separators survive
   reparsing. Matching URL text inside titles is escaped before flattening;
   already-rendered occurrences remain unchanged and deduplicate correctly.
+  General title sanitization remains deferred: preserved newline entities and
+  block markup can establish chapter boundaries on reparse, and lenient mode
+  intentionally recognizes prose timestamps.
 - HTTP feeds prioritize BOMs, then explicit charsets, then XML byte detection.
   Unknown charsets and decoding failures retry XML byte detection; structural XML
   failures and successful decodes do not. Common encodings avoid full-feed string
@@ -177,6 +186,9 @@ change as described below.
   identities outside instance dictionaries, including unhashable subclasses.
   Constructor presence is captured before native-field changes and reconciled
   independently for errno/strerror, retaining `None` when the other field changes.
+  Normal `args` reassignment captures native presence before changing arguments;
+  opaque custom arguments do not imply populated native fields. Native resets
+  reconcile stale recorded presence without changing constructor behavior.
   Resolved states skip formatting probes; user formatting hooks are not invoked.
   Copying honors registered reducers and custom reduce methods with protocol 4,
   including custom reconstruction factories and sixth-item state updaters.
