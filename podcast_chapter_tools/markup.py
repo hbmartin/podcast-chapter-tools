@@ -1,6 +1,7 @@
 """Bounded HTML preparation and line boundaries for untrusted show notes."""
 
 import re
+from array import array
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ _HTML_SPACE = "\t\n\f\r "
 _LINE_SPACE = "\t\f "
 _ATTRIBUTE_END = _HTML_SPACE + "><='\""
 _INVALID_VALUE_START = "<=>`"
-_TAG_NAME = re.compile(r"</?([A-Za-z][^\t\n\f\r />]*)")
+_TAG_NAME = re.compile(r"</?([A-Za-z][^\t\n\f\r /><'\"]*)")
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
 _RAW_END = {
     tag: re.compile(rf"</{tag}(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
@@ -142,19 +143,23 @@ def _has_attribute_assignment(text: str, cursor: int) -> bool:
         cursor = _line_padding_end(text, cursor)
         if text[cursor : cursor + 1] == "=":
             cursor = _line_padding_end(text, cursor + 1)
+            if not _plain_name(name):
+                while cursor < len(text) and text[cursor] in _HTML_SPACE:
+                    cursor += 1
+                return text[cursor : cursor + 1] in {"'", '"'}
             return cursor < len(text) and text[cursor] not in _INVALID_VALUE_START
     return False
 
 
-def _recover_line(text: str, index: int, *, chapter_context: bool) -> bool:
-    """Apply chapter-context precedence before testing attribute evidence."""
+def _recover_line(text: str, index: int) -> bool:
+    """Find a recovery alternative; the caller decides chapter precedence."""
     end = chapter_timestamp_end(text, index)
     if end is None:
         return False
     padded = _line_padding_end(text, index)
     leading = text[padded : padded + 1] == ">"
     if leading:
-        return chapter_context
+        return True
     return not _has_attribute_assignment(text, end)
 
 
@@ -163,7 +168,6 @@ def _tag_end(
     cursor: int,
     *,
     recover_chapters: bool = False,
-    chapter_context: bool = False,
 ) -> tuple[int, bool]:
     """Scan to a tag end or recovery boundary while tracking quoted text."""
     quote = ""
@@ -179,11 +183,7 @@ def _tag_end(
             break
         elif char == "<":
             nested = True
-        elif (
-            recover_chapters
-            and char in "\r\n"
-            and _recover_line(text, cursor + 1, chapter_context=chapter_context)
-        ):
+        elif recover_chapters and char in "\r\n" and _recover_line(text, cursor + 1):
             return cursor, True
         cursor += 1
     return cursor, nested
@@ -221,6 +221,7 @@ class _TagToken:
     formatted: bool = False
     multiline: bool = False
     comment: bool = False
+    balanced: bool = False
 
 
 def _terminator(text: str, newline: int) -> int | None:
@@ -236,22 +237,155 @@ def _terminator(text: str, newline: int) -> int | None:
     return cursor if chapter_timestamp_end(text, cursor) is not None else None
 
 
+def _has_newline(text: str, start: int, end: int) -> bool:
+    """Check a source range without allocating a potentially large substring."""
+    return text.find("\n", start, end) >= 0 or text.find("\r", start, end) >= 0
+
+
+_TOKEN_CHUNK_SIZE = 4096
+_OFFSET32_MAX = 2**32 - 1
+_CLOSING = 1
+_COMPLETE = 2
+_SELF_CLOSING = 4
+_FORMATTED = 8
+_MULTILINE = 16
+_COMMENT = 32
+_BALANCED = 64
+
+
+class _TokenChunk:
+    def __init__(self, width: str) -> None:
+        """Pack one releasable block with locally interned tag names."""
+        self.starts = array(width)
+        self.ends = array(width)
+        self.names = array(width)
+        self.flags = array("B")
+        self.symbols: list[str] = []
+        self.identifiers: dict[str, int] = {}
+        self.cuts: dict[int, int] = {}
+
+    def append(self, token: _TagToken) -> None:
+        """Retain numeric boundaries instead of token objects and boxed offsets."""
+        identifier = self.identifiers.get(token.name)
+        if identifier is None:
+            identifier = len(self.symbols)
+            self.symbols.append(token.name)
+            self.identifiers[token.name] = identifier
+        if token.cut is not None:
+            self.cuts[len(self.starts)] = token.cut
+        self.starts.append(token.start)
+        self.ends.append(token.end)
+        self.names.append(identifier)
+        self.flags.append(
+            token.closing * _CLOSING
+            | token.complete * _COMPLETE
+            | token.self_closing * _SELF_CLOSING
+            | token.formatted * _FORMATTED
+            | token.multiline * _MULTILINE
+            | token.comment * _COMMENT
+            | token.balanced * _BALANCED
+        )
+
+    def token(self, offset: int) -> _TagToken:
+        """Materialize only the boundary currently consumed by normal processing."""
+        flags = self.flags[offset]
+        return _TagToken(
+            start=self.starts[offset],
+            end=self.ends[offset],
+            name=self.symbols[self.names[offset]],
+            closing=bool(flags & _CLOSING),
+            complete=bool(flags & _COMPLETE),
+            self_closing=bool(flags & _SELF_CLOSING),
+            cut=self.cuts.get(offset),
+            formatted=bool(flags & _FORMATTED),
+            multiline=bool(flags & _MULTILINE),
+            comment=bool(flags & _COMMENT),
+            balanced=bool(flags & _BALANCED),
+        )
+
+
+class _TokenStore:
+    def __init__(self, size: int) -> None:
+        """Keep a monotonic consumer cursor over compact, releasable blocks."""
+        self.width = "I" if size <= _OFFSET32_MAX else "Q"
+        self.blocks: dict[int, _TokenChunk] = {}
+        self.length = 0
+        self.read = 0
+
+    def append(self, token: _TagToken) -> int:
+        """Append a discovered boundary and return its balancing-stack index."""
+        index = self.length
+        number = index // _TOKEN_CHUNK_SIZE
+        block = self.blocks.get(number)
+        if block is None:
+            block = self.blocks[number] = _TokenChunk(self.width)
+        block.append(token)
+        self.length += 1
+        return index
+
+    def _location(
+        self, index: int
+    ) -> tuple[_TokenChunk, int]:  # garuff: ignore[GAC005] - Record location.
+        """Resolve a record without allocating or retaining a per-tag object."""
+        number, offset = divmod(index, _TOKEN_CHUNK_SIZE)
+        return self.blocks[number], offset
+
+    def start(self, index: int) -> int:
+        """Read the original start of a balancing-stack entry."""
+        block, offset = self._location(index)
+        return block.starts[offset]
+
+    def name(self, index: int) -> str:
+        """Read an interned tag name without slicing the source again."""
+        block, offset = self._location(index)
+        return block.symbols[block.names[offset]]
+
+    def mark_balanced(self, index: int) -> None:
+        """Record matching evidence in the opening record's packed flags."""
+        block, offset = self._location(index)
+        block.flags[offset] |= _BALANCED
+
+    def _advance(self) -> None:
+        """Release alternatives and complete chunks as their records are consumed."""
+        number, offset = divmod(self.read, _TOKEN_CHUNK_SIZE)
+        self.blocks[number].cuts.pop(offset, None)
+        self.read += 1
+        if self.read % _TOKEN_CHUNK_SIZE == 0:
+            del self.blocks[number]
+
+    def peek(self, start: int) -> _TagToken | None:
+        """Skip passed records and inspect the next reusable boundary."""
+        while self.read < self.length:
+            block, offset = self._location(self.read)
+            if block.starts[offset] >= start:
+                return block.token(offset)
+            self._advance()
+        return None
+
+    def consume(self, start: int) -> _TagToken | None:
+        """Consume a discovered boundary only when its start matches the caller."""
+        token = self.peek(start)
+        if token is not None and token.start == start:
+            self._advance()
+            return token
+        return None
+
+
 class _TagCache:
     def __init__(self, text: str, *, recover_chapters: bool) -> None:
         """Keep a forward-only lookahead frontier and reusable tag boundaries."""
         self.text = text
         self.recover = recover_chapters
-        self.tokens: dict[int, _TagToken] = {}
-        self.matched: set[int] = set()
-        self.stack: list[_TagToken] = []
+        self.tokens = _TokenStore(len(text))
+        self.stack = array(self.tokens.width)
         self.cursor = 0
         self.raw: str | None = None
-        self.raw_ends: dict[int, _TagToken | None] = {}
         self.shape: _TagShape | None = None
+        self._initial: _TagToken | None = None
 
     def token(self, start: int) -> _TagToken:
         """Consume a discovered boundary or scan one new candidate exactly once."""
-        cached = self.tokens.pop(start, None)
+        cached = self.tokens.consume(start)
         return cached if cached is not None else self._scan(start)
 
     def _scan(self, start: int) -> _TagToken:
@@ -264,15 +398,12 @@ class _TagCache:
                 end=closing + 2 if closing >= 0 else len(text),
                 complete=closing >= 0,
                 comment=closing >= 0,
-                multiline=self.recover
-                and ("\n" in text[start:closing] or "\r" in text[start:closing]),
+                multiline=self.recover and _has_newline(text, start, closing),
             )
         match = _TAG_NAME.match(text, start)
         if match is None:
             return _TagToken(start=start, end=start)
-        end, nested = _tag_end(
-            text, match.end(), recover_chapters=self.recover, chapter_context=True
-        )
+        end, nested = _tag_end(text, match.end(), recover_chapters=self.recover)
         cut = end if end < len(text) and text[end] in "\r\n" else None
         formatted = None
         if self.recover:
@@ -289,9 +420,7 @@ class _TagCache:
         if formatted is not None:
             end, nested = formatted, False
         complete = end < len(text) and text[end] == ">" and not nested
-        multiline = self.recover and (
-            "\n" in text[start:end] or "\r" in text[start:end]
-        )
+        multiline = self.recover and _has_newline(text, start, end)
         self_closing = False
         if complete and text[end - 1 : end + 1] == "/>":
             self.shape = self.shape or _TagShape()
@@ -310,17 +439,24 @@ class _TagCache:
 
     def raw_closing(self, start: int, tag: str) -> _TagToken | None:
         """Reuse a raw-block search without examining its comparisons or quotes."""
-        if start not in self.raw_ends:
-            match = _RAW_END[tag].search(self.text, start)
-            self.raw_ends[start] = (
-                self._scan(match.start()) if match is not None else None
-            )
-        return self.raw_ends[start]
+        cached = self.tokens.peek(start)
+        if cached is not None and cached.closing and cached.name == tag:
+            return self.tokens.consume(cached.start)
+        if cached is None and self.cursor == len(self.text):
+            return None
+        return self._find_raw_closing(start, tag)
 
-    def _next(self) -> _TagToken | None:
+    def _find_raw_closing(self, start: int, tag: str) -> _TagToken | None:
+        """Scan one raw region at the forward lookahead frontier."""
+        match = _RAW_END[tag].search(self.text, start)
+        return self._scan(match.start()) if match is not None else None
+
+    def _next(
+        self,
+    ) -> tuple[int, _TagToken] | None:  # garuff: ignore[GAC005] - Scan result.
         """Advance the lookahead frontier past comments and suppressed raw text."""
         if self.raw is not None:
-            token = self.raw_closing(self.cursor, self.raw)
+            token = self._find_raw_closing(self.cursor, self.raw)
             self.raw = None
             if token is None:
                 self.cursor = len(self.text)
@@ -330,8 +466,9 @@ class _TagCache:
             if start < 0:
                 self.cursor = len(self.text)
                 return None
-            token = self.tokens.get(start) or self._scan(start)
-        self.tokens[token.start] = token
+            token = self._initial if self._initial is not None else self._scan(start)
+            self._initial = None
+        position = self.tokens.append(token)
         self.cursor = (
             token.end + 1
             if token.complete or token.comment or token.end == token.start
@@ -341,19 +478,19 @@ class _TagCache:
             raw = _RAW_START.match(self.text, token.start)
             if raw is not None:
                 self.raw = raw[1].lower()
-        return token
+        return position, token
 
     def balanced(self, opening: _TagToken) -> bool:
         """Look ahead only as far as needed, retaining nested matching results."""
         if opening.self_closing or opening.name in _VOID:
             return True
-        if opening.start in self.matched:
-            self.matched.remove(opening.start)
+        if opening.balanced:
             return True
         if self.cursor <= opening.start:
             self.cursor = opening.start
-            self.tokens[opening.start] = opening
-        while (token := self._next()) is not None:
+            self._initial = opening
+        while (record := self._next()) is not None:
+            position, token = record
             if token.comment or (
                 not token.complete
                 and not (
@@ -362,13 +499,14 @@ class _TagCache:
             ):
                 continue
             if token.closing:
-                if self.stack and self.stack[-1].name == token.name:
-                    matched = self.stack.pop().start
-                    if matched == opening.start:
+                if self.stack and self.tokens.name(self.stack[-1]) == token.name:
+                    matched = self.stack.pop()
+                    self.tokens.mark_balanced(matched)
+                    if self.tokens.start(matched) == opening.start:
                         return True
-                    self.matched.add(matched)
             elif not token.self_closing and token.name not in _VOID:
-                self.stack.append(token)
+                self.stack.append(position)
+        self.stack = array(self.tokens.width)
         return False
 
 
@@ -401,6 +539,55 @@ def _supported_link(attrs: list[tuple[str, str | None]]) -> str | None:
     return href if href and href.startswith(("http://", "https://")) else None
 
 
+def _generic_raw_parts(
+    text: str, index: int, tag: str
+) -> tuple[list[tuple[bool, str]], int]:  # garuff: ignore[GAC005] - Stream result.
+    """Suppress raw content without recovery objects or balancing lookahead."""
+    match = _RAW_END[tag].search(text, index)
+    if match is None:
+        return [(False, text[index:])], len(text)
+    end, _ = _tag_end(text, match.end())
+    if end == len(text):
+        return [(False, text[index:])], end
+    return [(False, text[index : match.start()]), (True, f"</{tag}>")], end + 1
+
+
+def _generic_markup_parts(text: str) -> Iterator[tuple[bool, str]]:
+    """Stream ordinary markup without allocating recovery tokens or caches."""
+    index = 0
+    shape = None
+    while index < len(text):
+        start = text.find("<", index)
+        yield False, text[index:] if start < 0 else text[index:start]
+        if start < 0:
+            return
+        if text.startswith("<!--", start):
+            closing = text.find("-->", start + 4)
+            if closing >= 0:
+                index = closing + 3
+                continue
+        match = _TAG_NAME.match(text, start)
+        end, nested = (
+            _tag_end(text, match.end()) if match is not None else (start, True)
+        )
+        if nested or end == len(text):
+            yield False, text[start:end] if end > start else "<"
+            index = end if end > start else start + 1
+            continue
+        part = text[start : end + 1]
+        yield True, part
+        index = end + 1
+        raw = _RAW_START.match(part)
+        if raw is None:
+            continue
+        if part.endswith("/>"):
+            shape = shape or _TagShape()
+            if shape.is_self_closing(part):
+                continue
+        parts, index = _generic_raw_parts(text, index, raw[1].lower())
+        yield from parts
+
+
 def _raw_parts(
     cache: _TagCache,
     index: int,
@@ -416,7 +603,7 @@ def _raw_parts(
     if closing is None or closing.end == len(cache.text):
         return [(False, cache.text[index:])], len(cache.text)
     parts = [(False, cache.text[index : closing.start]), (True, f"</{tag}>")]
-    following = closing.end + 1 if closing.complete else closing.end
+    following = closing.end + (cache.text[closing.end : closing.end + 1] == ">")
     if source is not None:
         source.tag(closing)
     if closing.formatted and visible is not None and visible.chapter:
@@ -429,45 +616,48 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
     *,
     recover_chapters: bool = False,
     line_context: Callable[[], _ChapterPrefix | None] | None = None,
+    source_context: _SourcePrefix | None = None,
 ) -> Iterator[tuple[bool, str]]:
     """Yield complete tags or literal data, reusing bounded lookahead regions."""
+    if not recover_chapters:
+        yield from _generic_markup_parts(text)
+        return
     index = 0
     cache = _TagCache(text, recover_chapters=recover_chapters)
-    source = _SourcePrefix() if recover_chapters else None
+    source = source_context if source_context is not None else _SourcePrefix()
     while index < len(text):
         start = text.find("<", index)
         data = text[index:] if start < 0 else text[index:start]
-        if source is not None:
-            source.data(data)
+        source.data(data)
         yield False, data
         if start < 0:
             break
         token = cache.token(start)
         visible = line_context() if line_context is not None else None
         chapter = bool(
-            (visible is not None and visible.chapter)
-            or (source is not None and source.prefix.chapter)
+            (visible is not None and visible.chapter) or source.prefix.chapter
         )
         boundary = visible is not None and (
             visible.chapter or visible.state == "leading"
         )
         complete = token.complete
-        if token.formatted and not token.closing and token.name not in _RAW_END:
-            if boundary and cache.balanced(token):
+        if token.formatted and not token.closing:
+            if token.name in _RAW_END:
+                if chapter and token.cut is not None:
+                    complete = False
+            elif boundary and cache.balanced(token):
                 yield False, "\n"
             elif chapter and token.cut is not None:
                 complete = False
         if not complete:
             end = token.cut if token.cut is not None else token.end
             fragment = text[start:end] if end > start else "<"
-            if source is not None:
-                source.data(fragment)
+            source.data(fragment)
             yield False, fragment
             index = end if end > start else start + 1
             continue
         part = text[start : token.end + 1]
-        if source is not None:
-            source.tag(token)
+        source.tag(token)
         if token.comment:
             index = token.end + 1
             continue
@@ -541,6 +731,7 @@ class _Lines(HTMLParser):
         """Initialize visible line buffers, compact spans, and link context."""
         super().__init__(convert_charrefs=False)
         self._prefix = _ChapterPrefix() if recover_chapters else None
+        self._source = _SourcePrefix() if recover_chapters else None
         self.lines: list[DescriptionLine] = []
         self._raw: list[str] = []
         self._text: list[str] = []
@@ -558,6 +749,8 @@ class _Lines(HTMLParser):
         """Flush the current visible line and reset its source buffers."""
         if self._prefix is not None:
             self._prefix.reset()
+        if self._source is not None:
+            self._source.prefix.reset()
         if self._spans:
             self.lines.append(
                 DescriptionLine(
@@ -668,6 +861,7 @@ def description_lines(
         text,
         recover_chapters=recover_chapters,
         line_context=parser.line_context if recover_chapters else None,
+        source_context=parser._source,  # noqa: SLF001 - Shared parser boundary events.
     ):
         if is_tag:
             parser.feed(part)

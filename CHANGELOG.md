@@ -113,6 +113,9 @@ change as described below.
   attribute interpretation. Framework evidence includes `[(name)]`, `*name`,
   `.name`, namespace/dynamic forms such as `v-bind:[key]`, and identifier-shaped
   modifier chains such as `on:click|once`.
+  Framework-form recovery evidence requires quoted values, including multiline
+  values; bare framework-like prose recovers as chapters. Plain attributes retain
+  bare values, and ordinary complete tags retain bare framework attributes.
   Balanced formatted tags, relative anchors, void elements, and genuine
   self-closing tags take precedence over blockquote recovery. Opening terminators
   introduce chapter boundaries only after empty visible context or chapter text;
@@ -121,6 +124,12 @@ change as described below.
   tag. Unbalanced tags retain recovery using both visible HTML and physical
   source prefixes. Lazy token/balance lookahead reuses discovered boundaries;
   comments, attributes, and raw contents cannot supply matching closing tags.
+  Physical and visible context reset together at block tags and decoded entity
+  newlines, preserving strict prose continuity after earlier chapters. Compact
+  array-backed boundaries and stacks replace retained per-tag objects, release
+  consumed segments, and keep dense unbalanced markup within allocation bounds.
+  Generic stripping and title processing skip recovery caches and token objects.
+  Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Generic HTML stripping does not apply this recovery; recovered title fragments
   remain literal.
   Arbitrary tags and multiline attributes remain supported. Script/style handling
@@ -129,16 +138,23 @@ change as described below.
   Unfinished matching raw closing tags can release description chapters,
   including blockquotes and HTML-wrapped prefixes, while
   generic stripping and truly unclosed raw blocks remain suppressed.
+  Pending raw openings inside chapter context recover following unquoted chapter
+  prefixes even with later closings; complete ordinary raw blocks remain hidden.
+  Malformed matching raw closings consume their terminators without leaking `>`.
   Explicit invalid timestamps are rejected before preparing their HTML titles.
   Title-preparation failures no longer become invalid-start diagnostics.
   Local PCI JSON files detect UTF-8, UTF-16, and UTF-32 from bytes.
   The CLI encodes output once before opening a destination, writing validated
   UTF-8 bytes with LF endings and preserving existing output on encoding failure.
-  Description writers flatten all title line boundaries recognized by `splitlines`,
+  Description writers flatten remaining title line boundaries recognized by `splitlines`,
   including Unicode separators and trailing boundaries,
   while parsing results retain literal titles. Rendered URL fields percent-encode
   all such boundaries, using UTF-8 for Unicode separators, preventing chapter-line
-  injection without changing parsed URLs or existing percent escapes.
+  injection without changing parsed data or existing percent escapes. Raw angle
+  brackets and quotes are percent-encoded; ampersands are HTML-escaped so URL
+  entities and tags cannot introduce chapters while query separators survive
+  reparsing. Matching URL text inside titles is escaped before flattening;
+  already-rendered occurrences remain unchanged and deduplicate correctly.
 - HTTP feeds prioritize BOMs, then explicit charsets, then XML byte detection.
   Unknown charsets and decoding failures retry XML byte detection; structural XML
   failures and successful decodes do not. Common encodings avoid full-feed string
@@ -159,6 +175,9 @@ change as described below.
   and later native reinitialization; constructor
   `None` filenames retain their unset state. Native presence tracking uses weak
   identities outside instance dictionaries, including unhashable subclasses.
+  Constructor presence is captured before native-field changes and reconciled
+  independently for errno/strerror, retaining `None` when the other field changes.
+  Resolved states skip formatting probes; user formatting hooks are not invoked.
   Copying honors registered reducers and custom reduce methods with protocol 4,
   including custom reconstruction factories and sixth-item state updaters.
   Cached feed failures raise fresh exceptions instead of retaining and growing

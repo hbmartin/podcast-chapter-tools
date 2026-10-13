@@ -119,14 +119,18 @@ def _capture_native_constructor(error: BaseException) -> None:
         for name in ("errno", "strerror", "filename", "filename2")
     ]
     errno, strerror, _, _ = native_values
-    if arguments[0] is not errno or arguments[1] is not strerror:
-        return
-    for name, value in zip(
-        ("errno", "strerror", "filename", "filename2"), native_values, strict=True
+    if not any(
+        value is None and argument is value
+        for argument, value in zip(arguments[:2], (errno, strerror), strict=True)
     ):
-        if value is not None:
-            _record_native_none(error, OSError, name, present=None)
+        return
+    _clear_populated_native(error, native_values)
     fields = _native_fields(error)
+    if all(
+        value is not None or fields.get((OSError, name)) is True
+        for name, value in (("errno", errno), ("strerror", strerror))
+    ):
+        return
     # Native construction ignores None filenames, but populates errno/strerror.
     # Check plain native formatting without invoking user-defined str/repr hooks.
     plain = all(
@@ -140,6 +144,15 @@ def _capture_native_constructor(error: BaseException) -> None:
     for name, value in (("errno", errno), ("strerror", strerror)):
         if value is None and (OSError, name) not in fields:
             _record_native_none(error, OSError, name, present=True)
+
+
+def _clear_populated_native(error: BaseException, native_values: list[object]) -> None:
+    """Drop stale overrides when native reinitialization populated a field."""
+    for name, value in zip(
+        ("errno", "strerror", "filename", "filename2"), native_values, strict=True
+    ):
+        if value is not None:
+            _record_native_none(error, OSError, name, present=None)
 
 
 def _reinitialized_native_fields(
@@ -160,6 +173,11 @@ def _matches_native_format(
 ) -> bool:
     """Confirm plain native initialization, including recorded field overrides."""
     probe = OSError(*arguments)
+    for name in ("errno", "strerror", "filename", "filename2"):
+        descriptor = vars(OSError)[name]
+        value = descriptor.__get__(error, type(error))
+        if value is not None:
+            descriptor.__set__(probe, value)
     for (owner, name), present in fields.items():
         descriptor = vars(owner)[name]
         if present:
@@ -366,11 +384,15 @@ class ChapterParseError(ValueError):
 
     def __setattr__(self, name: str, value: object) -> None:
         """Record successful explicit assignments to native None fields."""
+        if _native_owner(type(self), name) is not None:
+            _capture_native_constructor(self)
         super().__setattr__(name, value)
         _record_assignment(self, name, value)
 
     def __delattr__(self, name: str) -> None:
         """Clear native presence records only after successful deletion."""
+        if _native_owner(type(self), name) is not None:
+            _capture_native_constructor(self)
         super().__delattr__(name)
         owner = _native_owner(type(self), name)
         if owner is not None:
@@ -402,11 +424,15 @@ class ChapterFetchError(Exception):
 
     def __setattr__(self, name: str, value: object) -> None:
         """Record successful explicit assignments to native None fields."""
+        if _native_owner(type(self), name) is not None:
+            _capture_native_constructor(self)
         super().__setattr__(name, value)
         _record_assignment(self, name, value)
 
     def __delattr__(self, name: str) -> None:
         """Clear native presence records only after successful deletion."""
+        if _native_owner(type(self), name) is not None:
+            _capture_native_constructor(self)
         super().__delattr__(name)
         owner = _native_owner(type(self), name)
         if owner is not None:
