@@ -301,10 +301,10 @@ def test_native_xml_failure_validates_bounded_chunks_and_flushes(monkeypatch):
         factory = real_decoder(encoding)
 
         class Decoder:
-            def __init__(self, *, errors):
+            def __init__(self, errors="strict"):
                 self.decoder = factory(errors=errors)
 
-            def decode(self, data, *, final=False):
+            def decode(self, data, final=False):  # noqa: FBT002 - Match the codec callback.
                 chunks.append((len(data), final))
                 return self.decoder.decode(data, final=final)
 

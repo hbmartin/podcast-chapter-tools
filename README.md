@@ -110,6 +110,8 @@ characters (category `Cf`, including BOM and zero-width marks) are ignored durin
 recognition, but characters inside titles are preserved. The description CLI
 accepts UTF-8 files with or without a BOM. Local PCI JSON files also support
 UTF-16 and UTF-32 through byte-based encoding detection.
+Before opening an output file, the CLI validates UTF-8 encoding of the complete
+rendered document. An encoding failure leaves existing output untouched.
 
 A single trailing `:` or `.` followed by whitespace, a closing bracket, a dash
 separator, or end-of-line is a timestamp delimiter: `0:00: Intro`, `0:00. Intro`,
@@ -126,13 +128,19 @@ and styles are ignored. Both modes use bounded forward scanning.
 Arbitrary HTML tag names and multiline attributes remain supported. Description
 extraction recovers an unquoted newline followed by a chapter-line prefix unless
 the continuation provides attribute evidence: after the prefix and timestamp,
-attribute names and any preceding boolean tokens must match
-`[A-Za-z_:][A-Za-z0-9_.:-]*` before an assignment such as `alt="y"`.
+HTML-style attribute tokens and preceding boolean tokens can lead to an
+assignment such as `alt="y"`, `@click="play"`, `[prop]="value"`, or `1x="value"`.
+Names containing `/`, beginning with `?`, or containing a non-leading `@` instead
+favor chapter recovery; tokens are never split to find an assignment.
 URL/query tokens are not split into attributes, so titles containing
 `https://example.com/?v=abc -> more` recover correctly. Ambiguous `1:00 Show x=y`
 retains attribute interpretation; boolean tokens alone recover as chapters.
-A tag terminator `>` at the beginning of the next line, allowing ASCII HTML
-padding, completes the pending tag and preserves its links.
+When a pending tag began within a physical source line with an explicit chapter
+prefix, a continuation beginning with `>` and a timestamp recovers as a
+blockquote chapter. When the tag began on another source line, a leading `>`
+completes the pending tag and preserves formatter-style links, allowing ASCII
+HTML padding. This context rule chooses chapter interpretation for ambiguous
+inline tags and tag interpretation for ambiguous standalone tags.
 Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
 `Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
@@ -142,6 +150,8 @@ including tolerated slash and attribute suffixes. During description extraction,
 an unfinished matching `</script` or `</style` can release subsequent chapters
 at an unquoted recovery boundary. Quoted multiline closing attributes remain
 supported; raw blocks without a matching closing prefix remain suppressed.
+Description writers replace CRLF, CR, and LF inside titles with spaces to keep
+title text on one output line. Parsing results retain the original title text.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -220,8 +230,16 @@ All four error types and subclasses with custom constructors support pickling,
 including use in `ProcessPoolExecutor`, without duplicating message context.
 Reconstruction preserves arguments, attributes, notes, and declared slots without
 calling subclass constructors, including subclasses that also inherit `OSError`
-or `TimeoutError`. Custom `__setstate__` hooks run after slot restoration when
-unpickling or copying an error. Their `message` attribute holds the
+or `TimeoutError`. Cycles through arguments, dictionary fields, and Python slots
+survive pickle and deep copy; shallow copies retain references to the original
+field values. Explicit native `None` assignments and deletions preserve their
+effect on error formatting.
+Without custom `__getstate__`, Python slots are restored before custom
+`__setstate__` hooks run. A custom `__getstate__` owns dictionary and Python-slot
+state, allowing locks or other fields to be omitted; its state is passed unchanged
+to a custom setter. Standard dictionary and dictionary/slot-dictionary state also
+work without a custom setter, and `None` skips the setter. Arguments and native
+fields are retained independently. The error's `message` attribute holds the
 unformatted error text. Repeated failed index lookups raise fresh exceptions while
 reusing cached failure details.
 The library makes one request per fetch, follows redirects, and performs no retry

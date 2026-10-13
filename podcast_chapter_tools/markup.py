@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 
-from .recognition import begins_chapter_line, line_timestamp_start
+from .recognition import begins_chapter_line, chapter_timestamp_end
 
 _BLOCKS = frozenset(
     {
@@ -78,7 +78,9 @@ _ENTITY = re.compile(
 )
 _HTML_SPACE = "\t\n\f\r "
 _LINE_SPACE = "\t\f "
-_ATTRIBUTE_NAME = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
+_ATTRIBUTE_END = _HTML_SPACE + "><='\""
+_CONTROL_END = 32
+_DELETE = 127
 _INVALID_VALUE_START = "<=>`"
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
 _RAW_END = {
@@ -95,39 +97,48 @@ def _line_padding_end(text: str, cursor: int) -> int:
 
 
 def _has_attribute_assignment(text: str, cursor: int) -> bool:
-    """Distinguish identifier-shaped attributes from chapter text and URLs."""
-    cursor = _line_padding_end(text, cursor)
-    if text[cursor : cursor + 1] == ">":
-        return True
-    start = line_timestamp_start(text, cursor)
-    if start is None:
-        return False
-    cursor = start
-    while cursor < len(text) and (text[cursor].isdigit() or text[cursor] in ":."):
-        cursor += 1
+    """Read whole attribute tokens after an already recognized timestamp."""
     if text[cursor : cursor + 1] in {")", "]"}:
         cursor += 1
     while cursor < len(text) and text[cursor] not in "\r\n>":
         cursor = _line_padding_end(text, cursor)
-        name = _ATTRIBUTE_NAME.match(text, cursor)
-        if name is None:
+        start = cursor
+        while cursor < len(text) and text[cursor] not in _ATTRIBUTE_END:
+            cursor += 1
+        name = text[start:cursor]
+        if (
+            not name
+            or "/" in name
+            or name.startswith("?")
+            or "@" in name[1:]
+            or any(ord(char) < _CONTROL_END or ord(char) == _DELETE for char in name)
+        ):
             return False
-        cursor = _line_padding_end(text, name.end())
+        cursor = _line_padding_end(text, cursor)
         if text[cursor : cursor + 1] == "=":
             cursor = _line_padding_end(text, cursor + 1)
             return cursor < len(text) and text[cursor] not in _INVALID_VALUE_START
-        if cursor == name.end() and text[cursor : cursor + 1] not in {
-            "",
-            "\r",
-            "\n",
-            ">",
-        }:
-            return False
     return False
 
 
+def _recover_line(text: str, index: int, *, chapter_context: bool) -> bool:
+    """Apply chapter-context precedence before testing attribute evidence."""
+    end = chapter_timestamp_end(text, index)
+    if end is None:
+        return False
+    padded = _line_padding_end(text, index)
+    leading = text[padded : padded + 1] == ">"
+    if leading:
+        return chapter_context
+    return not _has_attribute_assignment(text, end)
+
+
 def _tag_end(
-    text: str, cursor: int, *, recover_chapters: bool = False
+    text: str,
+    cursor: int,
+    *,
+    recover_chapters: bool = False,
+    chapter_context: bool = False,
 ) -> tuple[int, bool]:
     """Scan to a tag end or recovery boundary while tracking quoted text."""
     quote = ""
@@ -146,8 +157,7 @@ def _tag_end(
         elif (
             recover_chapters
             and char in "\r\n"
-            and begins_chapter_line(text, cursor + 1)
-            and not _has_attribute_assignment(text, cursor + 1)
+            and _recover_line(text, cursor + 1, chapter_context=chapter_context)
         ):
             return cursor, True
         cursor += 1
@@ -179,23 +189,39 @@ class _TagShape(HTMLParser):
         """Distinguish slash markers from slash-valued unquoted attributes."""
         self.self_closing = True
 
-    def raw_tag(self, part: str, tag: str) -> str | None:
+    def is_self_closing(self, part: str) -> bool:
         """Classify one recognized raw opening tag with fresh parser state."""
         self.reset()
         self.self_closing = False
         self.feed(part)
-        return None if self.self_closing else tag
+        return self.self_closing
 
 
-def _raw_tag(
-    part: str, shape: _TagShape | None, *, valid: bool
-) -> tuple[str | None, _TagShape | None]:
-    """Recognize raw opening tags, reusing one lazily created shape parser."""
-    raw_start = _RAW_START.match(part) if valid else None
-    if raw_start is None:
-        return None, shape
-    shape = shape or _TagShape()
-    return shape.raw_tag(part, raw_start[1].lower()), shape
+class _ChapterContext:
+    def __init__(self, text: str, *, enabled: bool) -> None:
+        """Cache recognition at each physical line's origin during forward scanning."""
+        self.text = text
+        self.enabled = enabled
+        self.line_start = 0
+        self.context_line = -1
+        self.chapter = False
+
+    def advance(self, start: int, end: int) -> None:
+        """Account for consumed newlines without rescanning an earlier region."""
+        newline = max(
+            self.text.rfind("\n", start, end), self.text.rfind("\r", start, end)
+        )
+        if newline >= 0:
+            self.line_start = newline + 1
+
+    def recognized(self) -> bool:
+        """Recognize a physical line once, even when it contains many tags."""
+        if self.context_line != self.line_start:
+            self.chapter = self.enabled and begins_chapter_line(
+                self.text, self.line_start
+            )
+            self.context_line = self.line_start
+        return self.chapter
 
 
 def _markup_parts(
@@ -204,11 +230,14 @@ def _markup_parts(
     """Yield complete tags or literal data, scanning each candidate once."""
     index = 0
     shape = None
+    context = _ChapterContext(text, enabled=recover_chapters)
     while index < len(text):
         start = text.find("<", index)
         if start < 0:
             yield False, text[index:]
             break
+        # Advance physical-line context once, rather than rescanning long prefixes.
+        context.advance(index, start)
         yield False, text[index:start]
         if text.startswith("<!--", start):
             end = text.find("-->", start + 4)
@@ -216,6 +245,7 @@ def _markup_parts(
                 yield False, text[start:]
                 break
             index = end + 3
+            context.advance(start, index)
             continue
         name_start = start + 1
         if text[name_start : name_start + 1] == "/":
@@ -225,7 +255,14 @@ def _markup_parts(
             yield False, "<"
             index = start + 1
             continue
-        cursor, nested = _tag_end(text, name_start, recover_chapters=recover_chapters)
+        cursor, nested = _tag_end(
+            text,
+            name_start,
+            recover_chapters=recover_chapters,
+            chapter_context=context.recognized(),
+        )
+        # A complete multiline tag can change the following physical-line origin.
+        context.advance(start, cursor)
         if cursor == len(text):
             yield False, text[start:]
             break
@@ -236,11 +273,12 @@ def _markup_parts(
         part = text[start : cursor + 1]
         yield not nested, part
         index = cursor + 1
-        raw_tag, shape = _raw_tag(part, shape, valid=not nested)
-        if raw_tag:
+        raw_start = _RAW_START.match(part) if not nested else None
+        if raw_start and not (shape := shape or _TagShape()).is_self_closing(part):
             parts, index = _raw_parts(
-                text, index, raw_tag, recover_chapters=recover_chapters
+                text, index, raw_start[1].lower(), recover_chapters=recover_chapters
             )
+            context.advance(cursor, index)
             yield from parts
 
 
