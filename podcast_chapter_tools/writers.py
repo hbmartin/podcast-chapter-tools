@@ -3,6 +3,7 @@
 import json
 import re
 from collections.abc import Iterable
+from html import escape
 from typing import Any
 from urllib.parse import quote
 from xml.etree import ElementTree
@@ -11,6 +12,7 @@ from .entities import Chapter, ChapterData
 from .timecodes import format_timestamp
 
 _TITLE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
+_URL_UNSAFE = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029<>\"']")
 
 PCI_VERSION = "1.2.0"
 PSC_VERSION = "1.2"
@@ -89,11 +91,18 @@ def chapters_to_description(chapters: Iterable[ChapterInput]) -> str:
         data = _data(chapter)
         if not data.toc:
             continue
-        title = _TITLE_BREAK.sub(" ", data.title or "")
+        title = data.title or ""
+        url = None
+        if data.url:
+            url = escape(
+                _URL_UNSAFE.sub(lambda match: quote(match[0], safe=""), data.url),
+                quote=False,
+            )
+            # Preserve already-rendered occurrences, including URLs ending in &.
+            title = url.join(part.replace(data.url, url) for part in title.split(url))
+        title = _TITLE_BREAK.sub(" ", title)
         line = f"{format_timestamp(data.start)} {title}"
-        if data.url is not None:
-            url = _TITLE_BREAK.sub(lambda match: quote(match[0], safe=""), data.url)
-            if url not in title:
-                line += f" {url}"
+        if url is not None and url not in title:
+            line += f" {url}"
         lines.append(line)
     return "\n".join(lines)

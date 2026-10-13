@@ -137,8 +137,13 @@ letters/numbers, combining marks, `_`, `:`, `.`, or `-`. Framework forms `@name`
 names. Namespace/dynamic forms such as `v-bind:[key]` and identifier-shaped
 modifier chains such as `on:click|once` also provide attribute evidence. Complete
 ordinary tags retain arbitrary attribute names; this grammar only establishes
-recovery evidence. Names containing `/` or `?`, or a non-leading `@`, instead
-favor chapter recovery; tokens are never split to find an assignment.
+recovery evidence. On timestamp-prefixed continuation lines, framework-form
+assignments require quoted values, including values beginning on the next line.
+Plain attributes retain bare values, and complete ordinary tags retain bare
+framework attributes. This lets prose such as `Why .NET = productivity`,
+`*5 = great`, and `a|b = c` recover as chapters. Names containing `/` or `?`, or a
+non-leading `@`, instead favor chapter recovery; tokens are never split to find
+an assignment.
 URL/query tokens are not split into attributes, so titles containing
 `https://example.com/?v=abc -> more` or `example.com?ref=pod -> more` recover
 correctly. Arithmetic and punctuated prose such as `Why 1+1 = 2` and
@@ -159,6 +164,12 @@ visible HTML prefixes and physical source prefixes establish chapter context,
 so a continuation beginning with `>` and a timestamp can recover as a blockquote
 chapter. Outside chapter context, leading `>` completes the pending tag. ASCII
 HTML padding is allowed in formatted terminators.
+Physical and visible context reset together at HTML block boundaries, physical
+line breaks, and decoded entity newlines, preventing an earlier chapter prefix
+from turning later prose timestamps into chapters. Lookahead retains compact
+numeric records and releases consumed segments; generic markup processing skips
+recovery caches entirely. Nested `<` and quotes cannot become tag-name characters,
+so malformed comparison fragments remain literal.
 Generic `strip_html()` does not apply chapter-boundary recovery.
 Recovered fragments stay literal: retained titles can contain text such as
 `Intro <span` and are not guaranteed to be balanced HTML. Same-line text that forms
@@ -168,13 +179,25 @@ including tolerated slash and attribute suffixes. During description extraction,
 an unfinished matching `</script` or `</style` can release subsequent chapters
 at an unquoted recovery boundary. Quoted multiline closing attributes remain
 supported; raw blocks without a matching closing prefix remain suppressed.
-Description writers replace every `str.splitlines()` boundary inside titles with
-one space, including CRLF, Unicode separators, and trailing boundaries. Ordinary
-whitespace and original parsed titles are preserved.
+During description extraction, a pending script/style opening inside chapter
+context recovers a following unquoted chapter prefix, including `>1:00 Next`,
+even if a later matching closing exists. The unfinished opening remains literal.
+Complete same-line openings and ordinary raw blocks keep their suppression.
+Malformed matching raw closings consume a scanned terminator rather than leaking
+it into the preceding title.
+After escaping identified URL text, description writers replace remaining
+`str.splitlines()` boundaries inside titles with one space, including CRLF,
+Unicode separators, and trailing boundaries. Ordinary whitespace and original
+parsed titles are preserved.
 Rendered URL fields percent-encode every such boundary, including `%0D%0A` for
-CRLF and UTF-8 percent escapes for Unicode separators, so a URL cannot introduce
-another chapter line. Other URL characters, existing percent escapes, and
-original parsed URL values are preserved.
+CRLF and UTF-8 percent escapes for Unicode separators, plus raw `<`, `>`, and
+quotes. Ampersands become `&amp;` without first decoding entity-like URL text;
+regular query separators survive reparsing. Exact occurrences of the chapter's
+URL inside its title receive the same escaping before title flattening, while
+already-rendered occurrences remain unchanged and avoid duplicate suffixes.
+These rules prevent URL entities or markup from introducing chapter lines.
+Other title markup, existing percent escapes, and original parsed data are
+preserved; only description serialization changes.
 
 `require_monotonic=True` requires strictly increasing starts;
 `require_zero_start=True` requires the first chapter within one second of zero.
@@ -260,6 +283,10 @@ initialization happens before or after the chapter-error initializer. Native
 presence is reconciled after custom `__getstate__` runs, including later native
 reinitialization. Explicit native `None` assignments and deletions preserve their
 effect on error formatting.
+Changing the other native field does not lose constructor `None` presence:
+`errno` and `strerror` reconcile independently, with available constructor state
+captured before explicit native-field changes. Bookkeeping skips unnecessary
+formatting probes and does not call user formatting hooks.
 Constructor `None` filenames remain unset. Presence bookkeeping uses weak
 identity references and does not appear in `vars(error)` or custom Python state.
 Without custom `__getstate__`, Python slots are restored before custom
