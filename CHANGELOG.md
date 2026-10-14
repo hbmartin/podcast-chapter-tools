@@ -116,7 +116,7 @@ change as described below.
   Framework-form recovery evidence requires quoted values, including multiline
   values; bare framework-like prose recovers as chapters. Plain attributes retain
   bare values, and ordinary complete tags retain bare framework attributes.
-  Balanced formatted tags, relative anchors, void elements, and genuine
+  Matched formatted tags, relative anchors, void elements, and genuine
   self-closing tags take precedence over blockquote recovery. Opening terminators
   introduce chapter boundaries only after empty visible context or chapter text;
   strict prose stays continuous. Complete split closing tags close markup/link
@@ -140,9 +140,16 @@ change as described below.
   names or bare values no longer hide terminators from lookahead. Provisional
   formatted candidates cannot block enclosing balance, while genuine nested
   matches retain protection. Context-free lookahead consumes recovered raw closings.
-  Non-CR/LF separators retain the earlier `splitlines(keepends=True)` title and
-  source behavior: trailing separators before inline tags do not truncate titles,
-  and another segment within the same data chunk establishes the boundary.
+  Every `splitlines()` separator now establishes a boundary across data chunks,
+  inline tags, comments, and raw blocks; separators no longer remain in titles.
+  Decoded entity separators follow the same rule, preserving existing HTML
+  invalid-character removal and C1 substitutions. This supersedes the prior
+  chunk-dependent soft-separator compatibility behavior.
+  Explicit attribute-name and value states prevent misplaced equals signs and
+  quotes after completed values from hiding terminators.
+  Closing tags pair with the nearest unmatched same-name opening independently
+  of other tag names. Unclosed inline tags cannot block enclosing links, and
+  crossed candidates retain their later matches after cached chunks are consumed.
   Lookahead shares contextual raw-opening classification with normal processing,
   preventing unrelated earlier markup from hiding later tags or chapters. Raw
   closing absence requires a searched range; cached tokens are consumed once.
@@ -200,6 +207,10 @@ change as described below.
   identity witnesses replace discarded-object addresses, with bounded primitive
   processing and unknown opaque comparisons. Built-in argument descriptor reads
   bypass subclass `args` getters during bookkeeping and default serialization.
+  Call-local snapshots avoid repeated fingerprinting of unchanged primitive
+  values and inspect actual post-setter state. Integer fingerprints use one
+  transient signed byte encoding, with allocation proportional to integer size,
+  and bounded hashing views instead of quadratic repeated shifts.
   Constructor `None` filenames remain unset. Weak identity bookkeeping stays
   outside instance dictionaries and supports unhashable subclasses.
   Shared identities and opaque arguments do not imply native construction.
@@ -221,6 +232,10 @@ change as described below.
   already match; unsupported changes cannot replace an archive with different modes.
 - PCI writers serialize integral starts and ends as JSON integers while retaining
   fractional values.
+- PSC element and XML writers replace each XML 1.0-forbidden title, URL, or image
+  character with one ASCII space, retaining valid characters and source data.
+  Surrogate-containing PSC CLI input now produces well-formed normalized output;
+  other formats retain their existing encoding-failure safety.
 
 ### Security
 

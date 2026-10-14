@@ -23,7 +23,6 @@ _NATIVE_NAMES = ("errno", "strerror", "filename", "filename2") + (
 _PLAIN_NATIVE = frozenset({type(None), int, str, bytes, float, bool})
 _CHECKPOINT_CHUNK = 16 * 1024
 _CHECKPOINT_TEXT = _CHECKPOINT_CHUNK // 4
-_INTEGER_MASK = (1 << (_CHECKPOINT_CHUNK * 8)) - 1
 type _PresenceOrigin = Literal["assigned", "deleted", "constructor"]
 type _Witness = bytes | ReferenceType[object] | None
 
@@ -67,6 +66,17 @@ class _NativePresence:  # garuff: ignore[GAC009] - Private positional registry r
 
 
 _NATIVE_STATE: dict[int, _NativePresence] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeSnapshot:  # garuff: ignore[GAC009] - Private positional snapshot.
+    """Actual values and reusable witnesses retained only during one operation."""
+
+    args: tuple[object, ...]  # garuff: ignore[GAC005] - Immutable native arguments.
+    values: list[object]
+    arg_witnesses: list[_Witness]
+    value_witnesses: list[_Witness]
+    memo: dict[int, tuple[object, _Witness]]
 
 
 @lru_cache(maxsize=128)
@@ -121,16 +131,13 @@ def _native_args(
 
 
 def _integer_fingerprint(value: int) -> bytes:
-    """Fingerprint arbitrary integers without decimal formatting or large buffers."""
+    """Encode an integer once and hash bounded views of its transient bytes."""
     digest = sha256(b"int")
-    remaining = max(1, (value.bit_length() + 8) // 8)
-    digest.update(remaining.to_bytes(8, "little"))
-    while remaining:
-        width = min(remaining, _CHECKPOINT_CHUNK)
-        mask = _INTEGER_MASK if width == _CHECKPOINT_CHUNK else (1 << (width * 8)) - 1
-        digest.update((value & mask).to_bytes(width, "little"))
-        value >>= width * 8
-        remaining -= width
+    size = max(1, (value.bit_length() + 8) // 8)
+    digest.update(size.to_bytes(8, "little"))
+    view = memoryview(value.to_bytes(size, "little", signed=True))
+    for start in range(0, size, _CHECKPOINT_CHUNK):
+        digest.update(view[start : start + _CHECKPOINT_CHUNK])
     return digest.digest()
 
 
@@ -189,12 +196,49 @@ def _checkpoint_changed(previous: list[_Witness], current: list[_Witness]) -> bo
     return False
 
 
-def _observe_native(error: BaseException) -> None:
+def _snapshot_native(
+    error: OSError, previous: _NativeSnapshot | None = None
+) -> _NativeSnapshot:
+    """Inspect actual state once and reuse witnesses for live immutable values."""
+    arguments = _native_args(error)
+    values = _native_values(error)
+    memo: dict[int, tuple[object, _Witness]] = {}
+
+    def witnesses(items: "Iterable[object]") -> list[_Witness]:
+        """Deduplicate within this inspection and reuse prior immutable witnesses."""
+        result: list[_Witness] = []
+        for value in items:
+            identity = id(value)
+            cached = memo.get(identity)
+            if cached is None and previous is not None and type(value) in _PLAIN_NATIVE:
+                cached = previous.memo.get(identity)
+            witness = (
+                cached[1]
+                if cached is not None and cached[0] is value
+                else _witness(value)
+            )
+            memo[identity] = value, witness
+            result.append(witness)
+        return result
+
+    return _NativeSnapshot(
+        arguments, values, witnesses(arguments), witnesses(values), memo
+    )
+
+
+def _store_checkpoint(error: BaseException, snapshot: _NativeSnapshot) -> None:
+    """Store only weak identities and fingerprints, never call-local strong values."""
+    entry = _native_entry(error)
+    entry.arguments = snapshot.arg_witnesses
+    entry.values = snapshot.value_witnesses
+
+
+def _observe_native(
+    error: BaseException, previous: _NativeSnapshot | None = None
+) -> None:
     """Checkpoint a successfully observed native mutation or argument assignment."""
     if isinstance(error, OSError):
-        entry = _native_entry(error)
-        entry.arguments = [_witness(value) for value in _native_args(error)]
-        entry.values = [_witness(value) for value in _native_values(error)]
+        _store_checkpoint(error, _snapshot_native(error, previous))
 
 
 def _record_native_none(
@@ -223,16 +267,16 @@ def _record_assignment(error: BaseException, name: str, value: object) -> None: 
         _record_native_none(error, owner, name, present=True)
 
 
-def _capture_native_constructor(error: BaseException) -> None:
+def _capture_native_constructor(error: BaseException) -> _NativeSnapshot | None:
     """Verify only unambiguous primitive constructor state at portable checkpoints."""
     if not isinstance(error, OSError):
-        return
-    values = _native_values(error)
-    arguments = _native_args(error)
+        return None
+    snapshot = _snapshot_native(error)
+    values, arguments = snapshot.values, snapshot.args
     entry = _native_entry(error)
     if entry.arguments is not None and (
-        _checkpoint_changed(entry.arguments, [_witness(value) for value in arguments])
-        or _checkpoint_changed(entry.values, [_witness(value) for value in values])
+        _checkpoint_changed(entry.arguments, snapshot.arg_witnesses)
+        or _checkpoint_changed(entry.values, snapshot.value_witnesses)
     ):
         # An unobserved change could have reset hidden native presence as well.
         # Normal assignments checkpoint after success and do not enter this branch.
@@ -247,8 +291,8 @@ def _capture_native_constructor(error: BaseException) -> None:
         if value is None and (OSError, name) not in entry.fields
     ]
     if not candidates:
-        _observe_native(error)
-        return
+        _store_checkpoint(error, snapshot)
+        return snapshot
     # A multi-argument fallback renders as a tuple, never as a native message.
     # Single arguments can collide with native messages; opaque values can run hooks.
     safe = (
@@ -265,7 +309,8 @@ def _capture_native_constructor(error: BaseException) -> None:
             _record_native_none(
                 error, OSError, name, present=True, origin="constructor"
             )
-    _observe_native(error)
+    _store_checkpoint(error, snapshot)
+    return snapshot
 
 
 def _matches_native_format(error: OSError) -> bool:
@@ -281,12 +326,11 @@ def _set_error_attribute(
 ) -> None:
     """Capture before a normal write and checkpoint only after it succeeds."""
     tracked = name == "args" or _native_owner(type(error), name) is not None
-    if tracked:
-        _capture_native_constructor(error)
+    snapshot = _capture_native_constructor(error) if tracked else None
     setter(name, value)
     _record_assignment(error, name, value)
     if tracked:
-        _observe_native(error)
+        _observe_native(error, snapshot)
 
 
 def _delete_error_attribute(
@@ -294,19 +338,20 @@ def _delete_error_attribute(
 ) -> None:
     """Record native deletion after successful normal descriptor dispatch."""
     owner = _native_owner(type(error), name)
-    if name == "args" or owner is not None:
-        _capture_native_constructor(error)
+    tracked = name == "args" or owner is not None
+    snapshot = _capture_native_constructor(error) if tracked else None
     deleter(name)
     if owner is not None:
         _record_native_none(error, owner, name, present=False, origin="deleted")
-        _observe_native(error)
+    if tracked:
+        _observe_native(error, snapshot)
 
 
 def _error_state(error: BaseException) -> _ErrorState:
     """Capture native fields and either default or subclass-owned Python state."""
     custom_getter = type(error).__getstate__ is not object.__getstate__
     python_state = error.__getstate__() if custom_getter else error.__dict__
-    _capture_native_constructor(error)
+    snapshot = _capture_native_constructor(error)
     recorded = _native_fields(error)
     presence: list[tuple[type, str, bool, _PresenceOrigin]] = []
     slots: list[tuple[type, str, object]] = []
@@ -333,7 +378,12 @@ def _error_state(error: BaseException) -> _ErrorState:
                     if value is None and not recorded.get((owner, name), False):
                         continue
                 slots.append((owner, name, value))
-    return _ErrorState(_native_args(error), slots, python_state, presence)
+    return _ErrorState(
+        snapshot.args if snapshot is not None else _native_args(error),
+        slots,
+        python_state,
+        presence,
+    )
 
 
 def _state_parts(

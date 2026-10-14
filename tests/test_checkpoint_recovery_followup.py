@@ -29,13 +29,14 @@ def _roundtrip(error, operation):
 
 
 @pytest.mark.parametrize("separator", _SOFT_BREAKS)
-def test_trailing_soft_separator_before_inline_tag_preserves_title(separator):
+def test_trailing_soft_separator_before_inline_tag_establishes_boundary(separator):
     text = f"0:00 A{separator}<b>B</b>\n1:00 Next"
     result = parse_description_chapters(text)
-    assert [c.title for c in result.chapters] == [f"A{separator}<b>B</b>", "Next"]
-    line = markup.description_lines(text, recover_chapters=True)[0]
-    assert line.text == f"0:00 A{separator}B"
-    assert line.raw[line.raw_start(7)] == "B"
+    assert [c.title for c in result.chapters] == ["A", "Next"]
+    lines = markup.description_lines(text, recover_chapters=True)
+    assert lines[0].text == "0:00 A"
+    assert lines[1].text == "B"
+    assert lines[1].raw[lines[1].raw_start(0)] == "B"
 
 
 @pytest.mark.parametrize("separator", _SOFT_BREAKS)
@@ -49,7 +50,7 @@ def test_soft_separator_context_matches_normal_data_chunks(separator, suffix):
     assert vars(context.visible) == vars(normal.line_context())
     assert vars(context.source.prefix) == vars(normal._source.prefix)
     if not suffix:
-        assert normal.line_context().chapter
+        assert normal.line_context().state == "leading"
 
 
 @pytest.mark.parametrize("quote", ["'", '"'])

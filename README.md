@@ -149,7 +149,7 @@ URL/query tokens are not split into attributes, so titles containing
 correctly. Arithmetic and punctuated prose such as `Why 1+1 = 2` and
 `Q&A: rating = 5` also recover. Ambiguous `1:00 Show x=y`
 retains attribute interpretation; boolean tokens alone recover as chapters.
-Balanced formatted tags take precedence over blockquote recovery, including
+Matched formatted tags take precedence over blockquote recovery, including
 relative anchors, arbitrary inline tags, void elements, and genuine self-closing
 tags. When an opening terminator introduces a timestamp after empty visible
 context or chapter text, the boundary precedes the opening tag, keeping its
@@ -158,14 +158,20 @@ same formatting stays continuous in strict recognition mode; lenient recognition
 still finds prose timestamps. Complete split closing tags close their markup and
 link context before following chapter text; a formatted closing terminator after
 chapter text places the boundary after the closing tag.
-Tag balance uses a lazy forward cache; attributes, comments, scripts, and styles
-cannot supply matching closing tags. Unbalanced tags retain chapter recovery:
+Tag pairing uses a lazy forward cache; attributes, comments, scripts, and styles
+cannot supply matching closing tags. A closing tag pairs with the nearest
+unmatched opening of the same name even when other names remain open. Crossed
+tags and unclosed inline tags therefore do not erase an enclosing link's match,
+and other candidates remain available for their own later closing tags. Compact
+opening offsets survive consumed cache chunks and are released after matching or
+lookahead EOF. Unmatched tags retain chapter recovery:
 visible HTML prefixes and physical source prefixes establish chapter context,
 so a continuation beginning with `>` and a timestamp can recover as a blockquote
 chapter. Outside chapter context, leading `>` completes the pending tag. ASCII
 HTML padding is allowed in formatted terminators.
-Physical and visible context reset together at HTML block boundaries, CR/LF
-line breaks, and decoded entity newlines, preventing an earlier chapter prefix
+Physical and visible context reset together at HTML block boundaries and every
+line separator recognized by `str.splitlines()`, including decoded entity values,
+preventing an earlier chapter prefix
 from turning later prose timestamps into chapters. Lookahead retains compact
 numeric records and releases consumed segments; generic markup processing skips
 recovery caches entirely. Lookahead uses the same visible and physical prefix
@@ -180,6 +186,9 @@ malformed comparison fragments remain literal. A quote directly after a tag name
 makes its prefix literal without swallowing subsequent tags or chapter lines.
 Attribute scanning protects quotes only at the beginning of a value after `=`;
 quotes in attribute names or bare values do not hide following terminators.
+The assignment must follow an attribute name: misplaced equals signs and quotes
+after completed values do not start protected runs. Valid quoted and multiline
+values follow the supported Python HTML parser's tolerant attribute grammar.
 Unresolved formatted candidates cannot block an enclosing tag's balance;
 matching nested candidates still receive formatted-tag protection. Recovered raw
 closings end suppression consistently even in context-free balance lookahead.
@@ -200,10 +209,13 @@ even if a later matching closing exists. The unfinished opening remains literal.
 Complete same-line openings and ordinary raw blocks keep their suppression.
 Malformed matching raw closings consume a scanned terminator rather than leaking
 it into the preceding title.
-Parsing retains the earlier `splitlines(keepends=True)` behavior for non-CR/LF
-separators such as U+2028: their literal characters remain in source mappings,
-and another segment in the same data chunk begins a new line. A separator at the
-end of a chunk before an inline tag does not discard the following title text.
+Parsing treats every literal or decoded line separator as a boundary even across
+inline tags, comments, and suppressed raw blocks. Separators are not retained in
+titles; subsequent visible text begins a new line, preserving inline link context
+and source offsets. This replaces the earlier chunk-dependent handling of soft
+separators such as U+2028. Existing entity decoding remains unchanged: numeric
+references removed or substituted by HTML decoding do not become line breaks
+unless the resulting value is itself a separator.
 After escaping identified URL text, description writers replace remaining
 `str.splitlines()` boundaries inside titles with one space, including CRLF,
 Unicode separators, and trailing boundaries. Ordinary whitespace and original
@@ -218,7 +230,7 @@ already-rendered occurrences remain unchanged and avoid duplicate suffixes.
 These rules prevent URL entities or markup from introducing chapter lines.
 Other title markup, existing percent escapes, and original parsed data are
 preserved; only description serialization changes.
-Title sanitization beyond literal line-break flattening is deferred: preserved
+General description-title sanitization beyond literal line-break flattening is deferred: preserved
 entities such as `&#10;` and block tags such as `<br>` or `<p>` can create chapter
 boundaries when output is parsed again. Lenient recognition also deliberately
 finds ordinary timestamps in title prose; arbitrary titles do not guarantee an
@@ -322,6 +334,11 @@ primitive inputs are processed in bounded chunks; unsupported opaque comparisons
 remain unknown and do not independently clear reliable records. Bookkeeping and
 default serialization read the built-in argument descriptor without executing a
 subclass's `args` property.
+Integers are encoded once into a transient signed byte representation proportional
+to their size, then hashed through bounded views; repeated whole-integer shifts
+are avoided. Call-local snapshots reuse witnesses for unchanged primitive values
+while rereading actual state after successful setters. These temporary snapshots
+are not stored in the weak registry.
 
 Direct calls to built-in initializers or descriptors can bypass observation.
 Python's native descriptors and reduction do not expose every distinction between
@@ -384,6 +401,12 @@ retain optional titles, fractions, end boundaries, and silent markers. Integral
 `startTime` and `endTime` values are serialized as JSON integers. PSC and
 description writers omit silent markers and cannot preserve PCI end boundaries;
 missing titles become empty strings. Prefer PCI for preserving rich metadata.
+PSC element and XML writers replace each XML 1.0-forbidden character in titles,
+URLs, and image fields with one ASCII space without collapsing spaces or changing
+source objects. Allowed tabs, CR/LF, Unicode text, and normal XML escaping are
+preserved. This also allows PSC CLI conversion of surrogate-containing input to
+produce well-formed normalized XML; other output formats retain their existing
+surrogate and encoding behavior.
 `normalize_chapter_data()` retains metadata, while `normalize_chapters()` keeps its
 legacy return contract. ID3 extraction remains available with the `[id3]` extra.
 

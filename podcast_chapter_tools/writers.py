@@ -14,6 +14,9 @@ from .timecodes import format_timestamp
 
 _TITLE_BREAK = re.compile(LINE_BREAK_PATTERN)
 _URL_UNSAFE = re.compile(r"[\s<>\"']")
+_XML_INVALID = re.compile(
+    r"[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
 
 PCI_VERSION = "1.2.0"
 PSC_VERSION = "1.2"
@@ -76,7 +79,11 @@ def chapters_to_psc_element(chapters: Iterable[ChapterInput]) -> ElementTree.Ele
             attributes["href"] = data.url
         if data.image is not None:
             attributes["image"] = data.image
-        ElementTree.SubElement(root, f"{{{PSC_NAMESPACE}}}chapter", attributes)
+        ElementTree.SubElement(
+            root,
+            f"{{{PSC_NAMESPACE}}}chapter",
+            {name: _XML_INVALID.sub(" ", value) for name, value in attributes.items()},
+        )
     return root
 
 
