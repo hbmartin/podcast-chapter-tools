@@ -4,6 +4,8 @@ from copy import deepcopy
 from copyreg import dispatch_table
 from dataclasses import dataclass
 from functools import lru_cache, partial
+from hashlib import sha256
+from struct import pack
 from types import BuiltinFunctionType, MemberDescriptorType
 from typing import TYPE_CHECKING, Any, Literal, Self, cast
 from weakref import ReferenceType, ref
@@ -19,7 +21,11 @@ _NATIVE_NAMES = ("errno", "strerror", "filename", "filename2") + (
     ("winerror",) if "winerror" in vars(OSError) else ()
 )
 _PLAIN_NATIVE = frozenset({type(None), int, str, bytes, float, bool})
+_CHECKPOINT_CHUNK = 16 * 1024
+_CHECKPOINT_TEXT = _CHECKPOINT_CHUNK // 4
+_INTEGER_MASK = (1 << (_CHECKPOINT_CHUNK * 8)) - 1
 type _PresenceOrigin = Literal["assigned", "deleted", "constructor"]
+type _Witness = bytes | ReferenceType[object] | None
 
 
 def _allocate_error[E: BaseException](cls: type[E]) -> E:
@@ -56,8 +62,8 @@ class _NativePresence:  # garuff: ignore[GAC009] - Private positional registry r
     reference: ReferenceType[BaseException]
     fields: dict[tuple[type, str], bool]
     origins: dict[tuple[type, str], _PresenceOrigin]
-    arguments: int
-    values: list[int]
+    arguments: list[_Witness] | None
+    values: list[_Witness]
 
 
 _NATIVE_STATE: dict[int, _NativePresence] = {}
@@ -101,18 +107,94 @@ def _native_entry(error: BaseException) -> _NativePresence:
     entry = _NATIVE_STATE.get(identity)
     if entry is None or entry.reference() is not error:
         entry = _NativePresence(
-            ref(error, partial(_release_native, identity)), {}, {}, 0, []
+            ref(error, partial(_release_native, identity)), {}, {}, None, []
         )
         _NATIVE_STATE[identity] = entry
     return entry
+
+
+def _native_args(
+    error: BaseException,
+) -> tuple[object, ...]:  # garuff: ignore[GAC005] - Immutable native arguments.
+    """Read built-in arguments without dispatching to a subclass property."""
+    return vars(BaseException)["args"].__get__(error, type(error))
+
+
+def _integer_fingerprint(value: int) -> bytes:
+    """Fingerprint arbitrary integers without decimal formatting or large buffers."""
+    digest = sha256(b"int")
+    remaining = max(1, (value.bit_length() + 8) // 8)
+    digest.update(remaining.to_bytes(8, "little"))
+    while remaining:
+        width = min(remaining, _CHECKPOINT_CHUNK)
+        mask = _INTEGER_MASK if width == _CHECKPOINT_CHUNK else (1 << (width * 8)) - 1
+        digest.update((value & mask).to_bytes(width, "little"))
+        value >>= width * 8
+        remaining -= width
+    return digest.digest()
+
+
+def _witness(value: object) -> _Witness:
+    """Keep primitive fingerprints or weak identities, never custom state values."""
+    kind = type(value)
+    if kind is int:
+        return _integer_fingerprint(cast("int", value))
+    if kind is str or kind is bytes:
+        digest = sha256(b"str" if kind is str else b"bytes")
+        if kind is str:
+            text = cast("str", value)
+            for start in range(0, len(text), _CHECKPOINT_TEXT):
+                digest.update(
+                    text[start : start + _CHECKPOINT_TEXT].encode(
+                        "utf-8", "surrogatepass"
+                    )
+                )
+        else:
+            view = memoryview(cast("bytes", value))
+            for start in range(0, len(view), _CHECKPOINT_CHUNK):
+                digest.update(view[start : start + _CHECKPOINT_CHUNK])
+        return digest.digest()
+    if kind is float:
+        return b"float" + pack("!d", cast("float", value))
+    if kind is bool:
+        return b"true" if value else b"false"
+    if value is None:
+        return b"none"
+    return _weak_witness(value)
+
+
+def _weak_witness(value: object) -> ReferenceType[object] | None:
+    """Observe opaque identity weakly, leaving unsupported values unknown."""
+    try:
+        return ref(value)
+    except TypeError:
+        return None
+
+
+def _checkpoint_changed(previous: list[_Witness], current: list[_Witness]) -> bool:
+    """Detect positive changes without trusting freed addresses or opaque equality."""
+    if len(previous) != len(current):
+        return True
+    for old, new in zip(previous, current, strict=True):
+        if old is None and new is None:
+            continue
+        if isinstance(old, bytes) and isinstance(new, bytes):
+            if old != new:
+                return True
+        elif isinstance(old, ReferenceType) and isinstance(new, ReferenceType):
+            if old() is not new():
+                return True
+        else:
+            return True
+    return False
 
 
 def _observe_native(error: BaseException) -> None:
     """Checkpoint a successfully observed native mutation or argument assignment."""
     if isinstance(error, OSError):
         entry = _native_entry(error)
-        entry.arguments = id(error.args)
-        entry.values = [id(value) for value in _native_values(error)]
+        entry.arguments = [_witness(value) for value in _native_args(error)]
+        entry.values = [_witness(value) for value in _native_values(error)]
 
 
 def _record_native_none(
@@ -146,21 +228,16 @@ def _capture_native_constructor(error: BaseException) -> None:
     if not isinstance(error, OSError):
         return
     values = _native_values(error)
+    arguments = _native_args(error)
     entry = _native_entry(error)
-    if entry.arguments and (
-        entry.arguments != id(error.args)
-        or entry.values != [id(value) for value in values]
+    if entry.arguments is not None and (
+        _checkpoint_changed(entry.arguments, [_witness(value) for value in arguments])
+        or _checkpoint_changed(entry.values, [_witness(value) for value in values])
     ):
-        # Constructor inference depends on the observed checkpoint. Explicit writes
-        # remain independent unless a changed descriptor proves they were overwritten.
-        for key, origin in list(entry.origins.items()):
-            owner, name = key
-            changed = owner is OSError and entry.values[
-                _NATIVE_NAMES.index(name)
-            ] != id(values[_NATIVE_NAMES.index(name)])
-            if origin != "assigned" or changed:
-                entry.fields.pop(key, None)
-                entry.origins.pop(key, None)
+        # An unobserved change could have reset hidden native presence as well.
+        # Normal assignments checkpoint after success and do not enter this branch.
+        entry.fields.clear()
+        entry.origins.clear()
     for name, value in zip(_NATIVE_NAMES, values, strict=True):
         if value is not None and entry.fields.get((OSError, name)) is False:
             _record_native_none(error, OSError, name, present=None)
@@ -172,7 +249,6 @@ def _capture_native_constructor(error: BaseException) -> None:
     if not candidates:
         _observe_native(error)
         return
-    arguments = error.args
     # A multi-argument fallback renders as a tuple, never as a native message.
     # Single arguments can collide with native messages; opaque values can run hooks.
     safe = (
@@ -257,7 +333,7 @@ def _error_state(error: BaseException) -> _ErrorState:
                     if value is None and not recorded.get((owner, name), False):
                         continue
                 slots.append((owner, name, value))
-    return _ErrorState(error.args, slots, python_state, presence)
+    return _ErrorState(_native_args(error), slots, python_state, presence)
 
 
 def _state_parts(
@@ -304,12 +380,6 @@ def _apply_error_state(error: BaseException, state: _ErrorState) -> None:
         _record_native_none(error, owner, name, present=present, origin=origin)
     for owner, name, value in state.slots:
         vars(owner)[name].__set__(error, value)
-        if (
-            owner.__module__ == "builtins"
-            and value is None
-            and (owner, name) not in _native_fields(error)
-        ):
-            _record_native_none(error, owner, name, present=True)
     _observe_native(error)
     _apply_python_state(error, state.python_state)
 

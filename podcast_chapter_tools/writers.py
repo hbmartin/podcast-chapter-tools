@@ -8,10 +8,11 @@ from typing import Any
 from urllib.parse import quote
 from xml.etree import ElementTree
 
+from ._boundaries import LINE_BREAK_PATTERN
 from .entities import Chapter, ChapterData
 from .timecodes import format_timestamp
 
-_TITLE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
+_TITLE_BREAK = re.compile(LINE_BREAK_PATTERN)
 _URL_UNSAFE = re.compile(r"[\s<>\"']")
 
 PCI_VERSION = "1.2.0"

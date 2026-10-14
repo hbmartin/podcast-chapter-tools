@@ -188,14 +188,16 @@ def test_unfinished_raw_closing_cannot_balance_opening():
 
 
 @pytest.mark.parametrize("operation", _OPERATIONS)
-def test_explicit_presence_survives_unobserved_argument_only_change(operation):
+def test_detected_unobserved_argument_change_invalidates_presence(operation):
     error = _NativeError("failure", url="u")
     error.errno = None
     error.strerror = "m"
     BaseException.__init__(error, None, _Opaque())
     restored = _roundtrip(error, operation)
-    assert str(restored) == str(error) == "[Errno None] m"
-    assert errors._native_fields(restored)[OSError, "errno"]
+    assert restored.args[0] is None
+    assert isinstance(restored.args[1], _Opaque)
+    assert restored.strerror == "m"
+    assert not errors._native_fields(restored).get((OSError, "errno"))
 
 
 class _AttributeAuditError(Exception):
