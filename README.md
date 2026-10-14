@@ -189,14 +189,17 @@ the range actually searched. Nested `<` and quotes cannot become tag-name
 characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
 malformed comparison fragments remain literal. A quote directly after a tag name
 makes its prefix literal without swallowing subsequent tags or chapter lines.
-NUL-containing opening tag names are literal on every supported Python version:
+NUL-containing opening and closing tag names are literal on every supported Python version:
 the rejected name prefix, including NUL, is retained as text, and scanning resumes
-without letting that opening hide subsequent markup or chapters.
+so subsequent tags remain independently interpretable. Quotes after that rejected
+prefix do not protect the remaining text. A malformed closing never closes a
+shorter real name or supplies pairing evidence; only a genuine recognized closing
+ends that tag's markup and link context.
 This intentionally changes rendering on Python 3.13.6 and later, which previously
-accepted and hid these malformed openings. Ordinary complete closing tags instead
-discard their scanned suffixes, including NUL and attributes, and close the
-recognized name. Incomplete fragments and ASCII script/style matching retain
-their existing recovery rules.
+accepted and hid these malformed openings. The literal closing policy supersedes
+PR #171's shortened NUL closing names. Ordinary complete closings still discard
+attributes and dispatch the recognized name. ASCII script/style matching is
+unchanged, and malformed fragments inside suppressed raw blocks remain suppressed.
 Attribute boundaries follow the installed Python HTML parser's tolerant grammar,
 detected once using bounded probes through public parser callbacks and
 `get_starttag_text()` for repeated equals signs and whitespace.
@@ -205,7 +208,16 @@ later patch releases. Quotes protect values, not attribute names or bare values.
 Incomplete assignments can instead form boolean attributes or bare values where
 the runtime grammar permits; genuinely unfinished quoted values remain incomplete.
 Valid quoted and multiline values retain their protection, including an attribute
-name separated from `=` by LF, CR, or CRLF. Failed quote searches are remembered
+name separated from `=` by LF, CR, or CRLF. Timestamp-prefixed attribute evidence
+shares runtime-aware whitespace, assignment, and quoted-value scanning. If the
+connection crosses a line boundary, it requires a closed quoted value; blank
+whitespace gaps and a quote beginning on a later line after `=` are supported.
+Bare, missing, and unfinished cross-line values favor chapter recovery, superseding
+PR #171's bare cross-line evidence. Same-line plain bare assignments, framework
+quoted-value requirements, and boolean-only recovery retain their existing policies.
+Whitespace and repeated equals signs follow the installed parser, including early
+Python 3.13 whitespace behavior. Evidence never follows additional attribute tokens
+onto later lines. Failed quote searches are remembered
 without retaining successful closing offsets. Recognized complete closing tags are
 dispatched in canonical `</name>` form, preventing closing attributes from leaking
 visible text on older interpreters or when Unicode lowercasing expands a name.

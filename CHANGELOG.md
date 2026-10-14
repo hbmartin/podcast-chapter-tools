@@ -136,12 +136,15 @@ change as described below.
   Lookahead avoids HTMLParser buffers and skips decided prefix text.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Quotes directly after tag names remain literal rather than starting attributes.
-  NUL-containing opening tag names remain literal consistently across supported
+  NUL-containing opening and closing tag names remain literal consistently across supported
   Python versions; their rejected prefix is retained without hiding later tags or
-  chapters. This intentionally changes visible output on Python 3.13.6 and later,
-  which previously hid these malformed openings. Ordinary complete NUL-suffixed
-  closings discard their suffixes and close the recognized name, preventing literal
-  closing text, attribute leakage, and lingering link context.
+  chapters, and following quotes cannot protect the rest of the document. A NUL
+  closing never closes a shorter real name or supplies pairing evidence; genuine
+  closings retain markup/link ownership. This supersedes PR #171's shortened NUL
+  closing policy. Literal openings intentionally change visible output on Python
+  3.13.6 and later, which previously hid them. Suppressed raw content and ASCII
+  script/style matching remain unchanged; ordinary recognized closings still
+  discard attributes and dispatch their canonical names.
   Attribute scanning probes the installed parser's repeated-equals and whitespace
   grammar once through public callbacks and `get_starttag_text()`, supporting
   both early and current Python 3.13 releases without private parser APIs. Numeric
@@ -150,9 +153,15 @@ change as described below.
   where available, rather than consuming unrelated subsequent markup.
   Attribute names remain attached to assignments across LF, CR, and CRLF before
   `=`, protecting quoted chapter-like text. Timestamp-prefixed attribute evidence
-  permits the same direct ASCII-whitespace name-to-assignment connection, while
-  preserving same-line value rules and boolean-only chapter recovery. It does not
-  follow additional attribute tokens across lines. Recovery options retain their
+  shares runtime-aware whitespace, assignment, and quoted-value scanning. A
+  connection crossing a line boundary requires a closed quoted value, including
+  blank whitespace gaps and values beginning on a later line after `=`. Bare,
+  missing, and unfinished cross-line values recover as chapters, superseding
+  PR #171's bare cross-line policy. Same-line plain bare values, framework quoted
+  requirements, and boolean-only recovery remain supported. Runtime whitespace
+  includes early Python 3.13 behavior. Evidence does not follow additional
+  attribute tokens across lines. Whitespace scanning skips regex calls when the
+  current character cannot start applicable padding. Recovery options retain their
   truthiness and normalize flags before compact cache storage.
   Failed quote searches are cached without storing successful closing offsets.
   Recognized complete closing tags share canonical rendering, so older interpreters

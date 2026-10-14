@@ -88,9 +88,7 @@ _LITERAL = 0
 _DECODE = 1
 _BOUNDARY = 2
 _HTML_SPACE = "\t\n\f\r "
-_HTML_PADDING = re.compile(f"[{re.escape(_HTML_SPACE)}]+")
 _LINE_SPACE = "\t\f "
-_ATTRIBUTE_END = _HTML_SPACE + "><='\""
 _INVALID_VALUE_START = "<=>`"
 _TAG_NAME = re.compile(r"</?([A-Za-z][^\t\n\f\r /><'\"\x00]*)")
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
@@ -140,6 +138,10 @@ _ATTRIBUTE_SKIP = tuple(
 _BARE_ATTRIBUTE = re.compile(
     r"[^\s>]+" if _UNICODE_ATTRIBUTE_SPACE else r"[^\t\n\f\r >]+"
 )
+_EVIDENCE_NAMES = re.compile(
+    r"[^\s><='\"]+" if _UNICODE_ATTRIBUTE_SPACE else r"[^\t\n\f\r ><='\"]+"
+)
+_VALUE_BREAK = re.compile(LINE_BREAK_PATTERN)
 _ASSIGNMENT = re.compile(r"=+")
 _ATTRIBUTE_PREFIX = _HTML_SPACE + "/'\""
 _NAME, _AFTER_NAME, _VALUE, _BARE, _QUOTED = range(5)
@@ -153,10 +155,36 @@ def _line_padding_end(text: str, cursor: int) -> int:
     return cursor
 
 
-def _html_padding_end(text: str, cursor: int) -> int:
-    """Skip a contiguous ASCII HTML whitespace range, including line breaks."""
-    match = _HTML_PADDING.match(text, cursor)
+def _attribute_padding_end(
+    text: str, cursor: int, *, recover_chapters: bool = False
+) -> int:
+    """Share runtime whitespace ranges, leaving recovery newlines to the caller."""
+    if cursor >= len(text):
+        return cursor
+    char = text[cursor]
+    if (
+        char not in _HTML_SPACE and not (_UNICODE_ATTRIBUTE_SPACE and char.isspace())
+    ) or (recover_chapters and char in "\r\n"):
+        return cursor
+    match = _ATTRIBUTE_WHITESPACE[recover_chapters].match(text, cursor)
     return match.end() if match is not None else cursor
+
+
+def _assignment_end(text: str, cursor: int) -> int:
+    """Consume the installed parser's single or repeated assignment marker."""
+    match = _ASSIGNMENT.match(text, cursor) if _REPEATED_EQUALS else None
+    return match.end() if match is not None else cursor + 1
+
+
+def _quote_end(text: str, cursor: int, missing_quotes: set[str] | None = None) -> int:
+    """Share quoted-value boundaries and failed searches within a tag scan."""
+    quote = text[cursor]
+    if missing_quotes is not None and quote in missing_quotes:
+        return -1
+    closing = text.find(quote, cursor + 1)
+    if closing < 0 and missing_quotes is not None:
+        missing_quotes.add(quote)
+    return closing
 
 
 def _plain_name(name: str) -> bool:
@@ -190,33 +218,44 @@ def _attribute_name(name: str) -> bool:
     return _plain_name(name)
 
 
-def _has_attribute_assignment(text: str, cursor: int) -> bool:
+def _has_attribute_assignment(
+    text: str, cursor: int, missing_quotes: set[str] | None = None
+) -> bool:
     """Read whole attribute tokens after an already recognized timestamp."""
     if text[cursor : cursor + 1] in {")", "]"}:
         cursor += 1
     while cursor < len(text) and text[cursor] not in "\r\n>":
-        cursor = _line_padding_end(text, cursor)
-        start = cursor
-        while cursor < len(text) and text[cursor] not in _ATTRIBUTE_END:
-            cursor += 1
-        name = text[start:cursor]
+        padded = _attribute_padding_end(text, cursor, recover_chapters=True)
+        match = _EVIDENCE_NAMES.match(text, padded)
+        if match is None or _VALUE_BREAK.search(text, cursor, padded) is not None:
+            return False
+        cursor = padded
+        name = match[0]
         if not _attribute_name(name):
             return False
-        cursor = _line_padding_end(text, cursor)
-        assignment = _html_padding_end(text, cursor)
+        cursor = match.end()
+        assignment = _attribute_padding_end(text, cursor)
         if text[assignment : assignment + 1] == "=":
-            cursor = _line_padding_end(text, assignment + 1)
-            if not _plain_name(name):
-                cursor = _html_padding_end(text, cursor)
-                return text[cursor : cursor + 1] in {"'", '"'}
-            return cursor < len(text) and text[cursor] not in _INVALID_VALUE_START
-        if assignment != cursor:
-            # A newline may connect this name to '=', never to another token.
+            value = _attribute_padding_end(text, _assignment_end(text, assignment))
+            crossed = _VALUE_BREAK.search(text, cursor, value) is not None
+            if text[value : value + 1] in {"'", '"'}:
+                return not crossed or _quote_end(text, value, missing_quotes) >= 0
+            return (
+                not crossed
+                and _plain_name(name)
+                and value < len(text)
+                and text[value] not in _INVALID_VALUE_START
+            )
+        if _VALUE_BREAK.search(text, cursor, assignment) is not None:
+            # Padding may connect this name to '=', never to another line's token.
             return False
+        cursor = assignment
     return False
 
 
-def _recover_line(text: str, index: int) -> bool:
+def _recover_line(
+    text: str, index: int, missing_quotes: set[str] | None = None
+) -> bool:
     """Find a recovery alternative; the caller decides chapter precedence."""
     end = chapter_timestamp_end(text, index)
     if end is None:
@@ -225,7 +264,7 @@ def _recover_line(text: str, index: int) -> bool:
     leading = text[padded : padded + 1] == ">"
     if leading:
         return True
-    return not _has_attribute_assignment(text, end)
+    return not _has_attribute_assignment(text, end, missing_quotes)
 
 
 def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery share one bounded scan.
@@ -241,7 +280,6 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
     # Preserve historically accepted truthy inputs despite the bool annotation.
     recover_chapters = bool(recover_chapters)  # pyrefly: ignore[unnecessary-type-conversion]
     names = _ATTRIBUTE_NAMES[recover_chapters]
-    whitespace = _ATTRIBUTE_WHITESPACE[recover_chapters]
     padding = _ATTRIBUTE_SKIP[recover_chapters]
     missing_quotes: set[str] = set()
     fallback: int | None = None
@@ -249,9 +287,8 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
     while cursor < length:
         char = text[cursor]
         if state == _QUOTED:
-            closing = -1 if char in missing_quotes else text.find(char, cursor + 1)
+            closing = _quote_end(text, cursor, missing_quotes)
             if closing < 0:
-                missing_quotes.add(char)
                 if fallback is None:
                     return length, nested
                 cursor, fallback, state = fallback, None, fallback_state
@@ -261,7 +298,7 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
         if char == ">":
             return cursor, nested
         if recover_chapters and char in "\r\n":
-            if _recover_line(text, cursor + 1):
+            if _recover_line(text, cursor + 1, missing_quotes):
                 return cursor, nested
             if state == _VALUE:
                 fallback = cursor + 1
@@ -279,9 +316,11 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
                 nested = nested or text.find("<", cursor, end) >= 0
                 cursor = end
             else:
-                match = whitespace.match(text, cursor)
-                if match is not None:
-                    cursor = match.end()
+                padded = _attribute_padding_end(
+                    text, cursor, recover_chapters=recover_chapters
+                )
+                if padded != cursor:
+                    cursor = padded
                     continue
                 if char != "=":
                     state = _NAME
@@ -294,12 +333,10 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
                     or (_UNICODE_ATTRIBUTE_SPACE and preceding.isspace())
                     else None
                 )
-                assignment = (
-                    _ASSIGNMENT.match(text, cursor) if _REPEATED_EQUALS else None
-                )
-                cursor = assignment.end() if assignment is not None else cursor + 1
+                assignment = cursor
+                cursor = _assignment_end(text, cursor)
                 fallback_state = _NAME
-                if assignment is not None and cursor - assignment.start() > 1:
+                if cursor - assignment > 1:
                     # Legacy =+ can leave its final equals sign as a bare value
                     # when the preferred quoted value is incomplete.
                     fallback, fallback_state = cursor - 1, _BARE
@@ -307,9 +344,11 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
             elif recover_chapters and cursor < length and text[cursor] in "\r\n":
                 state = _AFTER_NAME
         elif state == _VALUE:
-            match = whitespace.match(text, cursor)
-            if match is not None:
-                cursor = match.end()
+            padded = _attribute_padding_end(
+                text, cursor, recover_chapters=recover_chapters
+            )
+            if padded != cursor:
+                cursor = padded
                 # An incomplete quoted branch can instead leave an empty value
                 # before this padding and read the quote as a boolean name.
                 fallback = cursor
@@ -338,7 +377,7 @@ def _tag_boundary(
         return match, match.end(), False
     if delimiter in {"'", '"'}:
         return match, match.end(), True
-    if delimiter == "\x00" and text[start + 1] != "/":
+    if delimiter == "\x00":
         return match, match.end() + 1, True
     end, nested = _tag_end(text, match.end(), recover_chapters=recover_chapters)
     return match, end, nested

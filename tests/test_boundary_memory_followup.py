@@ -124,12 +124,11 @@ def test_framework_recovery_evidence_requires_quoted_values(name, gap):
 
 
 @pytest.mark.parametrize("name", ["plain", "1x", "xml:lang", "café"])
-def test_plain_attribute_bare_values_and_newline_continuations_remain_supported(name):
-    for value in ["play", "\nplay"]:
-        text = (
-            f"<custom\n0:00 #ref {name}={value}>hidden</custom>\n1:00 Intro\n2:00 End"
-        )
-        assert [c.start for c in parse_description_chapters(text).chapters] == [60, 120]
+@pytest.mark.parametrize("value", ["play", "\nplay", '\n"play"'])
+def test_plain_attribute_bare_values_need_same_line_or_closed_quotes(name, value):
+    text = f"<custom\n0:00 #ref {name}={value}>hidden</custom>\n1:00 Intro\n2:00 End"
+    expected = [0, 60, 120] if value == "\nplay" else [60, 120]
+    assert [c.start for c in parse_description_chapters(text).chapters] == expected
 
 
 @pytest.mark.parametrize(

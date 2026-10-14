@@ -15,37 +15,45 @@ from podcast_chapter_tools.normalize import strip_html
 @pytest.mark.parametrize("recovery", [False, True])
 @pytest.mark.parametrize(
     "suffix",
-    ["\x00>", '\x00 class=">">', '\x00tail class="x>y">', '\x00\n class="x>y">'],
+    ["\x00>", '\x00 class=">">', '\x00tail class="x>y">'],
 )
-def test_nul_closings_discard_attributes_and_close_links(suffix, recovery):
-    text = f'0:00 <a href="https://e.com">Intro</a{suffix}\n1:00 Next\n2:00 Last'
+def test_nul_closings_stay_literal_until_the_genuine_close(suffix, recovery):
+    text = (
+        f'0:00 <a href="https://e.com">Intro</a{suffix} Tail</a>\n1:00 Next\n2:00 Last'
+    )
     lines = markup.description_lines(text, recover_chapters=recovery)
-    assert [line.text for line in lines] == ["0:00 Intro", "1:00 Next", "2:00 Last"]
-    assert lines[0].raw == '0:00 <a href="https://e.com">Intro</a>'
+    assert [line.text for line in lines] == [
+        f"0:00 Intro</a{suffix} Tail",
+        "1:00 Next",
+        "2:00 Last",
+    ]
+    assert lines[0].raw == text.splitlines()[0]
     assert [line.url_at(5) for line in lines] == ["https://e.com", None, None]
     assert lines[0].raw[lines[0].raw_start(5) : lines[0].raw_end(9)] == "Intro"
-    assert strip_html(text) == "0:00 Intro 1:00 Next 2:00 Last"
+    assert strip_html(text) == f"0:00 Intro</a{suffix} Tail 1:00 Next 2:00 Last"
     assert [(c.title, c.url) for c in parse_description_chapters(text).chapters] == [
-        ('<a href="https://e.com">Intro</a>', "https://e.com"),
+        (f'<a href="https://e.com">Intro</a{suffix} Tail</a>', "https://e.com"),
         ("Next", None),
         ("Last", None),
     ]
 
 
 @pytest.mark.parametrize("name", ["b", "custom", "aİİ"])
-def test_nul_closing_fragment_is_canonical(name):
+def test_nul_closing_fragment_is_literal(name):
     text = f'<{name}>Intro</{name}\x00 class=">">'
-    assert strip_html(text) == "Intro"
-    assert markup.inline_fragment(text) == f"<{name}>Intro</{name.lower()}>"
+    assert strip_html(text) == f'Intro</{name}\x00 class=">">'
+    assert markup.inline_fragment(text) == text + f"</{name.lower()}>"
 
 
 @pytest.mark.parametrize("prefix", ["", "<unclosed\n>"])
-def test_nul_closing_still_balances_formatted_anchor(prefix):
-    text = prefix + '<a href="https://e.com"\n>0:00 Intro</a\x00 class=">">\n1:00 Next'
+def test_genuine_closing_balances_formatted_anchor_after_literal_nul(prefix):
+    text = (
+        prefix + '<a href="https://e.com"\n>0:00 Intro</a\x00 class=">"></a>\n1:00 Next'
+    )
     assert [
         (c.start, c.title, c.url) for c in parse_description_chapters(text).chapters
     ] == [
-        (0, "Intro", "https://e.com"),
+        (0, 'Intro</a\x00 class=">">', "https://e.com"),
         (60, "Next", None),
     ]
 
@@ -90,13 +98,11 @@ def test_multiline_evidence_does_not_follow_new_tokens(continuation):
 
 @pytest.mark.parametrize("value", [">", " \t>", '"x>y">', "bare>", '=">'])
 @pytest.mark.parametrize("name", ["title", "@click"])
-def test_multiline_evidence_preserves_same_line_value_rules(name, value):
+def test_multiline_evidence_requires_closed_quotes(name, value):
     text = f"0:00 {name} =" + value
     multiline = text.replace(f"{name} =", f"{name}\n=")
     end = markup.chapter_timestamp_end(text, 0)
-    assert markup._has_attribute_assignment(
-        multiline, end
-    ) == markup._has_attribute_assignment(text, end)
+    assert markup._has_attribute_assignment(multiline, end) is (value == '"x>y">')
 
 
 def test_long_whitespace_assignment_keeps_quoted_timestamps_hidden():
