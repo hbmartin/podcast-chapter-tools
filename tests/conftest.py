@@ -1,7 +1,29 @@
+from html.parser import HTMLParser
 from pathlib import Path
 
 import httpx2
 import pytest
+
+
+@pytest.fixture
+def html_start_boundary():
+    class Probe(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.boundary = -1
+
+        def handle_starttag(self, tag, attrs):  # noqa: ARG002 - HTMLParser callback.
+            if self.getpos() == (1, 0):
+                self.boundary = len(self.get_starttag_text())
+
+    def boundary(text):
+        parser = Probe()
+        parser.feed(text)
+        parser.close()
+        return parser.boundary
+
+    return boundary
+
 
 FEED_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"

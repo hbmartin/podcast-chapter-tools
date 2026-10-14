@@ -6,7 +6,6 @@ import hashlib
 import os
 import subprocess
 import sys
-from html.parser import HTMLParser
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -109,11 +108,11 @@ def test_valid_quoted_attribute_runs_still_protect_terminators(attribute):
         " /''== \"x  =",
     ],
 )
-def test_attribute_boundaries_match_supported_html_parser(attributes):
+def test_attribute_boundaries_match_supported_html_parser(
+    attributes, html_start_boundary
+):
     text = "<b " + attributes + '>0:00 Visible">'
-    parser = HTMLParser()
-    parser.rawdata = text
-    end = parser.check_for_whole_start_tag(0)
+    end = html_start_boundary(text)
     cache = markup._TagCache(text, recover_chapters=False)
     assert cache.token(0).end + 1 == end
 
@@ -276,6 +275,8 @@ import sys
 from pathlib import Path
 from podcast_chapter_tools import errors
 assert Path(errors.__file__).resolve() == Path(sys.argv[1]) / 'podcast_chapter_tools' / 'errors.py'
+paths = [Path(value).resolve() for value in sys.path]
+assert paths.index(Path(sys.argv[1])) < paths.index(Path(sys.argv[2]))
 value = (1 << (20 * 1024 * 1024 * 8)) - 1
 if {negative!r}:
     value = -value
@@ -285,9 +286,9 @@ _, peak = tracemalloc.get_traced_memory()
 assert peak <= 25 * 1024 * 1024, peak
 """
     subprocess.run(  # noqa: S603 - Fixed isolated allocation regression.
-        [sys.executable, "-c", code, str(root)],
+        [sys.executable, "-c", code, str(root), str(tmp_path)],
         cwd=root,
-        env={**os.environ, "PYTHONPATH": str(root)},
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(root), str(tmp_path)))},
         check=True,
         capture_output=True,
         text=True,

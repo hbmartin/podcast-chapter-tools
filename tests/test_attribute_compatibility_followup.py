@@ -2,7 +2,6 @@
 # ruff: noqa: SLF001
 
 import re
-from html.parser import HTMLParser
 
 import pytest
 
@@ -11,7 +10,10 @@ from podcast_chapter_tools._boundaries import LINE_BREAK_PATTERN, is_line_break
 from podcast_chapter_tools.normalize import strip_html
 
 
-@pytest.mark.parametrize("space", ["", " ", "\t", "\f", "\v", "\u2003"])
+@pytest.mark.parametrize("recovery", [False, True])
+@pytest.mark.parametrize(
+    "space", ["", " ", "\t", "\f", "\v", "\u2003", "\n", "\r", "\r\n"]
+)
 @pytest.mark.parametrize(
     "assignment",
     [
@@ -31,13 +33,13 @@ from podcast_chapter_tools.normalize import strip_html
         "\"=='x",
     ],
 )
-def test_assignment_boundaries_follow_the_runtime_parser(space, assignment):
+def test_assignment_boundaries_follow_the_runtime_parser(
+    space, assignment, recovery, html_start_boundary
+):
     name, equals, value = assignment.partition("=")
     text = f"<b {name}{space}{equals}{value}>Notes</b>\n0:00 Intro"
-    parser = HTMLParser()
-    parser.rawdata = text
-    expected = parser.check_for_whole_start_tag(0)
-    token = markup._TagCache(text, recover_chapters=False).token(0)
+    expected = html_start_boundary(text)
+    token = markup._TagCache(text, recover_chapters=recovery).token(0)
     assert token.end == (expected - 1 if expected >= 0 else len(text))
 
 

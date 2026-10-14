@@ -186,16 +186,23 @@ the range actually searched. Nested `<` and quotes cannot become tag-name
 characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
 malformed comparison fragments remain literal. A quote directly after a tag name
 makes its prefix literal without swallowing subsequent tags or chapter lines.
+NUL-containing tag names are also literal on every supported Python version:
+the rejected name prefix, including NUL, is retained as text, and scanning resumes
+without letting that opening hide subsequent markup or chapters.
 Attribute boundaries follow the installed Python HTML parser's tolerant grammar,
-detected once using bounded probes for repeated equals signs and whitespace.
+detected once using bounded probes through public parser callbacks and
+`get_starttag_text()` for repeated equals signs and whitespace.
 This supports early Python 3.13 releases without assuming their grammar matches
 later patch releases. Quotes protect values, not attribute names or bare values.
 Incomplete assignments can instead form boolean attributes or bare values where
 the runtime grammar permits; genuinely unfinished quoted values remain incomplete.
-Valid quoted and multiline values retain their protection. Complete closing tags
-are dispatched by their recognized names, preventing closing attributes from
-leaking visible text on older interpreters. These grammar rules do not change
-literal recovery for quote-adjacent tag names or malformed comparison fragments.
+Valid quoted and multiline values retain their protection, including an attribute
+name separated from `=` by LF, CR, or CRLF. Failed quote searches are remembered
+without retaining successful closing offsets. Every complete closing tag is
+dispatched in canonical `</name>` form, preventing closing attributes from leaking
+visible text on older interpreters or when Unicode lowercasing expands a name.
+Original lexical boundaries and opening markup remain intact. These rules do not
+change literal recovery for quote-adjacent tag names or malformed comparison fragments.
 Scanner performance is measured separately for long names, bare and quoted
 attribute values, dense lookahead, and short-tag stripping; timings describe those
 workloads and interpreters rather than every possible description.
