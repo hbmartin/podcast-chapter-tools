@@ -136,20 +136,32 @@ change as described below.
   Lookahead avoids HTMLParser buffers and skips decided prefix text.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Quotes directly after tag names remain literal rather than starting attributes.
+  Attribute scanning probes the installed parser's repeated-equals and whitespace
+  grammar once, supporting both early and current Python 3.13 releases. Numeric
+  states and bulk range scans handle long names and values without repeated suffix
+  scans. Incomplete quoted assignments use the runtime's boolean/bare fallback
+  where available, rather than consuming unrelated subsequent markup.
+  Complete closing tags dispatch canonical names so older interpreters cannot
+  leak their discarded attributes into chapter text. Early Python 3.13.0 and
+  3.13.6 receive enforced compatibility test jobs.
   Attribute quotes protect only values beginning after `=`; quotes in attribute
   names or bare values no longer hide terminators from lookahead. Provisional
   formatted candidates cannot block enclosing balance, while genuine nested
   matches retain protection. Context-free lookahead consumes recovered raw closings.
   Every `splitlines()` separator now establishes a boundary across data chunks,
-  inline tags, comments, and raw blocks; separators no longer remain in titles.
+  inline tags, comments, and raw blocks; visible separators no longer remain in
+  titles, while separators inside preserved quoted attributes can remain.
   Decoded entity separators follow the same rule, preserving existing HTML
   invalid-character removal and C1 substitutions. This supersedes the prior
   chunk-dependent soft-separator compatibility behavior.
+  Decoded separators can end a title before non-chapter continuation text.
   Explicit attribute-name and value states prevent misplaced equals signs and
   quotes after completed values from hiding terminators.
   Closing tags pair with the nearest unmatched same-name opening independently
   of other tag names. Unclosed inline tags cannot block enclosing links, and
   crossed candidates retain their later matches after cached chunks are consumed.
+  Unmatched records survive early lookahead returns until a later match,
+  lookahead EOF, or disposal of the cache; spare-array recycling is removed.
   Lookahead shares contextual raw-opening classification with normal processing,
   preventing unrelated earlier markup from hiding later tags or chapters. Raw
   closing absence requires a searched range; cached tokens are consumed once.
@@ -210,7 +222,8 @@ change as described below.
   Call-local snapshots avoid repeated fingerprinting of unchanged primitive
   values and inspect actual post-setter state. Integer fingerprints use one
   transient signed byte encoding, with allocation proportional to integer size,
-  and bounded hashing views instead of quadratic repeated shifts.
+  and a single hash update instead of quadratic repeated shifts. The isolated
+  allocation test explicitly imports the checkout and tolerates slower CI startup.
   Constructor `None` filenames remain unset. Weak identity bookkeeping stays
   outside instance dictionaries and supports unhashable subclasses.
   Shared identities and opaque arguments do not imply native construction.

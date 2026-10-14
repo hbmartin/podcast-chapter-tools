@@ -1,7 +1,10 @@
 """Shared physical line separators for parsing and description rendering."""
 
-LINE_BREAK_PATTERN = r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]"
-LINE_BREAKS = frozenset({"\r\n", *"\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"})
+import re
+
+LINE_BREAK_CHARACTERS = "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+LINE_BREAK_PATTERN = r"\r\n|[" + re.escape(LINE_BREAK_CHARACTERS) + "]"
+LINE_BREAKS = frozenset({"\r\n", *LINE_BREAK_CHARACTERS})
 
 
 def is_line_break(text: str) -> bool:

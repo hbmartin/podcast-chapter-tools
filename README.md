@@ -163,8 +163,10 @@ cannot supply matching closing tags. A closing tag pairs with the nearest
 unmatched opening of the same name even when other names remain open. Crossed
 tags and unclosed inline tags therefore do not erase an enclosing link's match,
 and other candidates remain available for their own later closing tags. Compact
-opening offsets survive consumed cache chunks and are released after matching or
-lookahead EOF. Unmatched tags retain chapter recovery:
+opening offsets survive consumed cache chunks and early lookahead returns so
+later closings can still match them. Records are released upon matching, when
+lookahead reaches EOF, or when the description's cache is discarded. Unmatched
+tags retain chapter recovery:
 visible HTML prefixes and physical source prefixes establish chapter context,
 so a continuation beginning with `>` and a timestamp can recover as a blockquote
 chapter. Outside chapter context, leading `>` completes the pending tag. ASCII
@@ -184,11 +186,19 @@ the range actually searched. Nested `<` and quotes cannot become tag-name
 characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
 malformed comparison fragments remain literal. A quote directly after a tag name
 makes its prefix literal without swallowing subsequent tags or chapter lines.
-Attribute scanning protects quotes only at the beginning of a value after `=`;
-quotes in attribute names or bare values do not hide following terminators.
-The assignment must follow an attribute name: misplaced equals signs and quotes
-after completed values do not start protected runs. Valid quoted and multiline
-values follow the supported Python HTML parser's tolerant attribute grammar.
+Attribute boundaries follow the installed Python HTML parser's tolerant grammar,
+detected once using bounded probes for repeated equals signs and whitespace.
+This supports early Python 3.13 releases without assuming their grammar matches
+later patch releases. Quotes protect values, not attribute names or bare values.
+Incomplete assignments can instead form boolean attributes or bare values where
+the runtime grammar permits; genuinely unfinished quoted values remain incomplete.
+Valid quoted and multiline values retain their protection. Complete closing tags
+are dispatched by their recognized names, preventing closing attributes from
+leaking visible text on older interpreters. These grammar rules do not change
+literal recovery for quote-adjacent tag names or malformed comparison fragments.
+Scanner performance is measured separately for long names, bare and quoted
+attribute values, dense lookahead, and short-tag stripping; timings describe those
+workloads and interpreters rather than every possible description.
 Unresolved formatted candidates cannot block an enclosing tag's balance;
 matching nested candidates still receive formatted-tag protection. Recovered raw
 closings end suppression consistently even in context-free balance lookahead.
@@ -209,10 +219,13 @@ even if a later matching closing exists. The unfinished opening remains literal.
 Complete same-line openings and ordinary raw blocks keep their suppression.
 Malformed matching raw closings consume a scanned terminator rather than leaking
 it into the preceding title.
-Parsing treats every literal or decoded line separator as a boundary even across
-inline tags, comments, and suppressed raw blocks. Separators are not retained in
-titles; subsequent visible text begins a new line, preserving inline link context
-and source offsets. This replaces the earlier chunk-dependent handling of soft
+Parsing treats every literal or decoded separator in visible text as a boundary
+even across inline tags, comments, and suppressed raw blocks. Visible separators
+are not retained in titles; separators inside preserved quoted attributes can
+remain in title markup. Subsequent visible text begins a new line, preserving
+inline link context and source offsets. A decoded separator can end a title:
+`0:00 Q&#8232;A and more` produces the title `Q`, while the continuation does not
+begin another chapter. This replaces the earlier chunk-dependent handling of soft
 separators such as U+2028. Existing entity decoding remains unchanged: numeric
 references removed or substituted by HTML decoding do not become line breaks
 unless the resulting value is itself a separator.
@@ -330,12 +343,12 @@ multi-argument tuple fallback cannot be confused with native formatting; no user
 formatting hooks run, and serialization never temporarily mutates the error.
 Checkpoints use type-tagged primitive fingerprints and weak identity witnesses,
 not addresses of discarded argument tuples or state values. Variable-length
-primitive inputs are processed in bounded chunks; unsupported opaque comparisons
+strings and bytes are processed in bounded chunks; unsupported opaque comparisons
 remain unknown and do not independently clear reliable records. Bookkeeping and
 default serialization read the built-in argument descriptor without executing a
 subclass's `args` property.
 Integers are encoded once into a transient signed byte representation proportional
-to their size, then hashed through bounded views; repeated whole-integer shifts
+to their size, then hashed in one update; repeated whole-integer shifts
 are avoided. Call-local snapshots reuse witnesses for unchanged primitive values
 while rereading actual state after successful setters. These temporary snapshots
 are not stored in the weak registry.

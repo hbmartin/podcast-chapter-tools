@@ -131,13 +131,11 @@ def _native_args(
 
 
 def _integer_fingerprint(value: int) -> bytes:
-    """Encode an integer once and hash bounded views of its transient bytes."""
+    """Encode an integer once and hash its canonical transient buffer."""
     digest = sha256(b"int")
     size = max(1, (value.bit_length() + 8) // 8)
     digest.update(size.to_bytes(8, "little"))
-    view = memoryview(value.to_bytes(size, "little", signed=True))
-    for start in range(0, size, _CHECKPOINT_CHUNK):
-        digest.update(view[start : start + _CHECKPOINT_CHUNK])
+    digest.update(value.to_bytes(size, "little", signed=True))
     return digest.digest()
 
 

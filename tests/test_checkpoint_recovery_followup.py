@@ -215,7 +215,7 @@ def test_unknown_witnesses_do_not_clear_reliable_presence():
     assert str(copy.copy(error)) == "[Errno None] m"
 
 
-def test_checkpoint_reads_large_text_and_bytes_in_bounded_chunks(monkeypatch):
+def test_checkpoint_hashes_text_bytes_in_chunks_and_integers_once(monkeypatch):
     original = errors.sha256
     sizes = []
 
@@ -231,9 +231,13 @@ def test_checkpoint_reads_large_text_and_bytes_in_bounded_chunks(monkeypatch):
             return self._digest.digest()
 
     monkeypatch.setattr(errors, "sha256", Digest)
-    for value in ["\U0001f600" * 50000, b"x" * 200000, 1 << 200000, -(1 << 200000)]:
+    for value in ["\U0001f600" * 50000, b"x" * 200000]:
         assert errors._witness(value)
     assert max(sizes) <= 16 * 1024
+    for value in [1 << 200000, -(1 << 200000)]:
+        sizes.clear()
+        assert errors._witness(value)
+        assert sizes == [8, 25001]
 
 
 def _raise_shadow_args_error():

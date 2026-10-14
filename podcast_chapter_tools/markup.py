@@ -99,6 +99,39 @@ _RAW_END = {
 }
 
 
+def _parser_boundary(text: str) -> int:
+    """Probe the installed parser once with a bounded attribute example."""
+    parser = HTMLParser()
+    parser.rawdata = text
+    return parser.check_for_whole_start_tag(0)
+
+
+_EQUALS_PROBE = '<b x=="a>b">'
+_SPACE_PROBE = '<b x=\v"a>b">'
+_REPEATED_EQUALS = _parser_boundary(_EQUALS_PROBE) == len(_EQUALS_PROBE)
+_UNICODE_ATTRIBUTE_SPACE = _parser_boundary(_SPACE_PROBE) == len(_SPACE_PROBE)
+_ATTRIBUTE_SPACE = r"\s" if _UNICODE_ATTRIBUTE_SPACE else r"[\t\n\f\r ]"
+_ATTRIBUTE_PADDING = r"[^\S\r\n]" if _UNICODE_ATTRIBUTE_SPACE else r"[\t\f ]"
+_ATTRIBUTE_FIRST = r"[^\s/>]" if _UNICODE_ATTRIBUTE_SPACE else r"[^\t\n\f\r />]"
+_ATTRIBUTE_TAIL = r"[^\s/=>]*" if _UNICODE_ATTRIBUTE_SPACE else r"[^\t\n\f\r /=>]*"
+_ATTRIBUTE_NAMES = tuple(
+    re.compile(f"(?:{space}|/)*{_ATTRIBUTE_FIRST}{_ATTRIBUTE_TAIL}{space}*")
+    for space in (_ATTRIBUTE_SPACE, _ATTRIBUTE_PADDING)
+)
+_ATTRIBUTE_WHITESPACE = tuple(
+    re.compile(space + "+") for space in (_ATTRIBUTE_SPACE, _ATTRIBUTE_PADDING)
+)
+_ATTRIBUTE_SKIP = tuple(
+    re.compile(f"(?:{space}|/)+") for space in (_ATTRIBUTE_SPACE, _ATTRIBUTE_PADDING)
+)
+_BARE_ATTRIBUTE = re.compile(
+    r"[^\s>]+" if _UNICODE_ATTRIBUTE_SPACE else r"[^\t\n\f\r >]+"
+)
+_ASSIGNMENT = re.compile(r"=+")
+_ATTRIBUTE_PREFIX = _HTML_SPACE + "/'\""
+_NAME, _VALUE, _BARE, _QUOTED = range(4)
+
+
 def _line_padding_end(text: str, cursor: int) -> int:
     """Skip ASCII HTML padding without crossing a physical line boundary."""
     while cursor < len(text) and text[cursor] in _LINE_SPACE:
@@ -172,48 +205,98 @@ def _recover_line(text: str, index: int) -> bool:
     return not _has_attribute_assignment(text, end)
 
 
-def _tag_end(  # noqa: C901, PLR0912 - Explicit attribute states share one bounded scan.
+def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery share one bounded scan.
     text: str,
     cursor: int,
     *,
     recover_chapters: bool = False,
 ) -> tuple[int, bool]:
     """Scan to a tag end or recovery boundary while tracking quoted text."""
-    quote = ""
-    state = "between"
+    state = _NAME
     nested = False
-    while cursor < len(text):
+    length = len(text)
+    names = _ATTRIBUTE_NAMES[recover_chapters]
+    whitespace = _ATTRIBUTE_WHITESPACE[recover_chapters]
+    padding = _ATTRIBUTE_SKIP[recover_chapters]
+    quotes: dict[str, tuple[int, int]] = {}
+    fallback: int | None = None
+    fallback_state = _NAME
+    while cursor < length:
         char = text[cursor]
-        if quote:
-            if char == quote:
-                quote = ""
-                state = "between"
-        elif char == ">":
-            break
-        elif recover_chapters and char in "\r\n" and _recover_line(text, cursor + 1):
+        if state == _QUOTED:
+            previous = quotes.get(char)
+            if (
+                previous is not None
+                and previous[0] <= cursor
+                and (cursor < previous[1] or previous[1] < 0)
+            ):
+                closing = previous[1]
+            else:
+                closing = text.find(char, cursor + 1)
+                quotes[char] = cursor, closing
+            if closing < 0:
+                if fallback is None:
+                    return length, nested
+                cursor, fallback, state = fallback, None, fallback_state
+            else:
+                cursor, state = closing + 1, _NAME
+            continue
+        if char == ">":
             return cursor, nested
+        if recover_chapters and char in "\r\n":
+            if _recover_line(text, cursor + 1):
+                return cursor, nested
+            if state == _BARE:
+                state = _NAME
+            elif state == _VALUE:
+                fallback = cursor + 1
+                fallback_state = _NAME
+            cursor += 1
+            continue
+        if state == _NAME:
+            match = names.match(text, cursor)
+            if match is None:
+                skip = padding.match(text, cursor)
+                cursor = skip.end() if skip is not None else cursor + 1
+                continue
+            end = match.end()
+            nested = nested or text.find("<", cursor, end) >= 0
+            cursor = end
+            if cursor < length and text[cursor] == "=":
+                preceding = text[cursor - 1]
+                fallback = (
+                    cursor
+                    if preceding in _ATTRIBUTE_PREFIX
+                    or (_UNICODE_ATTRIBUTE_SPACE and preceding.isspace())
+                    else None
+                )
+                assignment = (
+                    _ASSIGNMENT.match(text, cursor) if _REPEATED_EQUALS else None
+                )
+                cursor = assignment.end() if assignment is not None else cursor + 1
+                fallback_state = _NAME
+                if assignment is not None and cursor - assignment.start() > 1:
+                    # Legacy =+ can leave its final equals sign as a bare value
+                    # when the preferred quoted value is incomplete.
+                    fallback, fallback_state = cursor - 1, _BARE
+                state = _VALUE
+        elif state == _VALUE:
+            match = whitespace.match(text, cursor)
+            if match is not None:
+                cursor = match.end()
+                # An incomplete quoted branch can instead leave an empty value
+                # before this padding and read the quote as a boolean name.
+                fallback = cursor
+                fallback_state = _NAME
+            else:
+                state = _QUOTED if char in "'\"" else _BARE
         else:
-            if char == "<":
-                nested = True
-            if state == "between":
-                if char not in _HTML_SPACE and char != "/":
-                    state = "name"
-            elif state in {"name", "after_name"}:
-                if char == "=":
-                    state = "before_value"
-                elif char in _HTML_SPACE:
-                    state = "after_name"
-                else:
-                    state = "between" if char == "/" else "name"
-            elif state == "before_value":
-                if char not in _HTML_SPACE:
-                    if char in {"'", '"'}:
-                        quote = char
-                    else:
-                        state = "bare"
-            elif char in _HTML_SPACE:
-                state = "between"
-        cursor += 1
+            match = _BARE_ATTRIBUTE.match(text, cursor)
+            if match is not None:
+                end = match.end()
+                nested = nested or text.find("<", cursor, end) >= 0
+                cursor = end
+            state = _NAME
     return cursor, nested
 
 
@@ -444,7 +527,6 @@ class _TagCache:
         self.recover = recover_chapters
         self.tokens = _TokenStore(len(text))
         self.openings: dict[str, array] = {}
-        self._spare: array | None = None
         self.cursor = 0
         self.raw: str | None = None
         self.shape: _TagShape | None = None
@@ -572,10 +654,7 @@ class _TagCache:
         """Retain source offsets independently of consumed cache chunks."""
         locations = self.openings.get(token.name)
         if locations is None:
-            locations = (
-                self._spare if self._spare is not None else array(self.tokens.width)
-            )
-            self._spare = None
+            locations = array(self.tokens.width)
             self.openings[token.name] = locations
         locations.append(token.start)
         locations.append(position)
@@ -590,7 +669,6 @@ class _TagCache:
         self.tokens.mark_balanced(position)
         if not locations:
             del self.openings[name]
-            self._spare = locations
         return start
 
     def _begin_lookahead(
@@ -632,7 +710,6 @@ class _TagCache:
             elif not token.self_closing and token.name not in _VOID:
                 self._push(position, token)
         self.openings.clear()
-        self._spare = None
         return False
 
 
@@ -845,12 +922,14 @@ def _generic_markup_parts(text: str) -> Iterator[tuple[bool, str]]:
                 return
             index = end + 1
             continue
-        _, end, nested = _tag_boundary(text, start)
+        match, end, nested = _tag_boundary(text, start)
         if nested or end == len(text):
             yield False, text[start:end] if end > start else "<"
             index = end if end > start else start + 1
             continue
         part = text[start : end + 1]
+        if text[start + 1] == "/" and match is not None and end != match.end():
+            part = f"</{match[1].lower()}>"
         yield True, part
         index = end + 1
         raw = _RAW_START.match(part)
@@ -938,6 +1017,8 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
         if token.comment:
             index = token.end + 1
             continue
+        if token.closing and token.end != token.start + len(token.name) + 2:
+            part = f"</{token.name}>"
         yield True, part
         index = token.end + 1
         if event.after:

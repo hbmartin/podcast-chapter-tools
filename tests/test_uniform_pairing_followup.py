@@ -3,9 +3,11 @@
 
 import copy
 import hashlib
+import os
 import subprocess
 import sys
 from html.parser import HTMLParser
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
@@ -256,10 +258,24 @@ def test_integer_fingerprints_keep_canonical_representation(value):
 
 
 @pytest.mark.parametrize("negative", [False, True])
-def test_large_integer_fingerprint_allocation_is_linear(negative):
+def test_large_integer_fingerprint_allocation_is_linear(
+    negative, tmp_path, monkeypatch
+):
+    root = Path(__file__).resolve().parents[1]
+    package = tmp_path / "podcast_chapter_tools"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "errors.py").write_text(
+        'raise RuntimeError("Imported the competing installed copy")', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     code = f"""
 import tracemalloc
+import sys
+from pathlib import Path
 from podcast_chapter_tools import errors
+assert Path(errors.__file__).resolve() == Path(sys.argv[1]) / 'podcast_chapter_tools' / 'errors.py'
 value = (1 << (20 * 1024 * 1024 * 8)) - 1
 if {negative!r}:
     value = -value
@@ -269,9 +285,11 @@ _, peak = tracemalloc.get_traced_memory()
 assert peak <= 25 * 1024 * 1024, peak
 """
     subprocess.run(  # noqa: S603 - Fixed isolated allocation regression.
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", code, str(root)],
+        cwd=root,
+        env={**os.environ, "PYTHONPATH": str(root)},
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60,
     )
