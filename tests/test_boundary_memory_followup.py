@@ -362,7 +362,7 @@ def test_cached_matching_survives_consumed_chunk_release(monkeypatch):
     assert len(lines) == 2502
     assert len(scanned) == len(set(scanned)) == 5001
     assert len(caches[0].tokens.blocks) <= 1
-    assert not caches[0].stack
+    assert not caches[0].openings
 
 
 def test_compact_offsets_support_sources_larger_than_32_bits():

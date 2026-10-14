@@ -4,6 +4,7 @@ import multiprocessing
 import pickle
 import threading
 from concurrent.futures import ProcessPoolExecutor
+from xml.etree import ElementTree
 
 import pytest
 
@@ -100,6 +101,9 @@ def test_cli_surrogates_do_not_truncate_output(tmp_path, capsys, encoded, fmt):
     if fmt == "pci":
         assert status == 0
         assert json.loads(output.read_bytes())["chapters"][0]["title"] == "a\ud800b"
+    elif fmt == "psc":
+        assert status == 0
+        assert ElementTree.fromstring(output.read_bytes())[0].attrib["title"] == "a b"
     else:
         assert status == 1
         assert output.read_bytes() == original
