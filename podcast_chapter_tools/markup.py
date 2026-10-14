@@ -91,7 +91,7 @@ _HTML_SPACE = "\t\n\f\r "
 _LINE_SPACE = "\t\f "
 _ATTRIBUTE_END = _HTML_SPACE + "><='\""
 _INVALID_VALUE_START = "<=>`"
-_TAG_NAME = re.compile(r"</?([A-Za-z][^\t\n\f\r /><'\"]*)")
+_TAG_NAME = re.compile(r"</?([A-Za-z][^\t\n\f\r /><'\"\x00]*)")
 _RAW_START = re.compile(r"<(script|style)(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
 _RAW_END = {
     tag: re.compile(rf"</{tag}(?=[\t\n\f\r />])", re.IGNORECASE | re.ASCII)
@@ -99,11 +99,23 @@ _RAW_END = {
 }
 
 
+class _GrammarProbe(HTMLParser):
+    def __init__(self) -> None:
+        """Observe bounded grammar examples through public parser callbacks."""
+        super().__init__()
+        self.boundary = -1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 - HTMLParser callback.
+        """Capture the recognized opening text without private parser state."""
+        self.boundary = len(self.get_starttag_text() or "")
+
+
 def _parser_boundary(text: str) -> int:
     """Probe the installed parser once with a bounded attribute example."""
-    parser = HTMLParser()
-    parser.rawdata = text
-    return parser.check_for_whole_start_tag(0)
+    parser = _GrammarProbe()
+    parser.feed(text)
+    parser.close()
+    return parser.boundary
 
 
 _EQUALS_PROBE = '<b x=="a>b">'
@@ -129,7 +141,7 @@ _BARE_ATTRIBUTE = re.compile(
 )
 _ASSIGNMENT = re.compile(r"=+")
 _ATTRIBUTE_PREFIX = _HTML_SPACE + "/'\""
-_NAME, _VALUE, _BARE, _QUOTED = range(4)
+_NAME, _AFTER_NAME, _VALUE, _BARE, _QUOTED = range(5)
 
 
 def _line_padding_end(text: str, cursor: int) -> int:
@@ -215,26 +227,20 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
     state = _NAME
     nested = False
     length = len(text)
+    # Preserve historically accepted truthy inputs despite the bool annotation.
+    recover_chapters = bool(recover_chapters)  # pyrefly: ignore[unnecessary-type-conversion]
     names = _ATTRIBUTE_NAMES[recover_chapters]
     whitespace = _ATTRIBUTE_WHITESPACE[recover_chapters]
     padding = _ATTRIBUTE_SKIP[recover_chapters]
-    quotes: dict[str, tuple[int, int]] = {}
+    missing_quotes: set[str] = set()
     fallback: int | None = None
     fallback_state = _NAME
     while cursor < length:
         char = text[cursor]
         if state == _QUOTED:
-            previous = quotes.get(char)
-            if (
-                previous is not None
-                and previous[0] <= cursor
-                and (cursor < previous[1] or previous[1] < 0)
-            ):
-                closing = previous[1]
-            else:
-                closing = text.find(char, cursor + 1)
-                quotes[char] = cursor, closing
+            closing = -1 if char in missing_quotes else text.find(char, cursor + 1)
             if closing < 0:
+                missing_quotes.add(char)
                 if fallback is None:
                     return length, nested
                 cursor, fallback, state = fallback, None, fallback_state
@@ -246,22 +252,29 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
         if recover_chapters and char in "\r\n":
             if _recover_line(text, cursor + 1):
                 return cursor, nested
-            if state == _BARE:
-                state = _NAME
-            elif state == _VALUE:
+            if state == _VALUE:
                 fallback = cursor + 1
                 fallback_state = _NAME
             cursor += 1
             continue
-        if state == _NAME:
-            match = names.match(text, cursor)
-            if match is None:
-                skip = padding.match(text, cursor)
-                cursor = skip.end() if skip is not None else cursor + 1
-                continue
-            end = match.end()
-            nested = nested or text.find("<", cursor, end) >= 0
-            cursor = end
+        if state <= _AFTER_NAME:
+            if state == _NAME:
+                match = names.match(text, cursor)
+                if match is None:
+                    skip = padding.match(text, cursor)
+                    cursor = skip.end() if skip is not None else cursor + 1
+                    continue
+                end = match.end()
+                nested = nested or text.find("<", cursor, end) >= 0
+                cursor = end
+            else:
+                match = whitespace.match(text, cursor)
+                if match is not None:
+                    cursor = match.end()
+                    continue
+                if char != "=":
+                    state = _NAME
+                    continue
             if cursor < length and text[cursor] == "=":
                 preceding = text[cursor - 1]
                 fallback = (
@@ -280,6 +293,8 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
                     # when the preferred quoted value is incomplete.
                     fallback, fallback_state = cursor - 1, _BARE
                 state = _VALUE
+            elif recover_chapters and cursor < length and text[cursor] in "\r\n":
+                state = _AFTER_NAME
         elif state == _VALUE:
             match = whitespace.match(text, cursor)
             if match is not None:
@@ -312,6 +327,8 @@ def _tag_boundary(
         return match, match.end(), False
     if delimiter in {"'", '"'}:
         return match, match.end(), True
+    if delimiter == "\x00":
+        return match, match.end() + 1, True
     end, nested = _tag_end(text, match.end(), recover_chapters=recover_chapters)
     return match, end, nested
 
@@ -903,7 +920,13 @@ def _closing_parts(
     """Share suppression and scanned-terminator consumption across both paths."""
     if end == len(text):
         return [(False, text[index:])], end
-    return [(False, text[index:start]), (True, f"</{tag}>")], end + (text[end] == ">")
+    following = end + (text[end] == ">")
+    return [(False, text[index:start]), (True, _closing_tag(tag))], following
+
+
+def _closing_tag(name: str) -> str:
+    """Dispatch complete closings without source-length or attribute assumptions."""
+    return f"</{name}>"
 
 
 def _generic_markup_parts(text: str) -> Iterator[tuple[bool, str]]:
@@ -928,8 +951,8 @@ def _generic_markup_parts(text: str) -> Iterator[tuple[bool, str]]:
             index = end if end > start else start + 1
             continue
         part = text[start : end + 1]
-        if text[start + 1] == "/" and match is not None and end != match.end():
-            part = f"</{match[1].lower()}>"
+        if text[start + 1] == "/" and match is not None:
+            part = _closing_tag(match[1].lower())
         yield True, part
         index = end + 1
         raw = _RAW_START.match(part)
@@ -1017,8 +1040,8 @@ def _markup_parts(  # noqa: C901 - Recovery, complete tags, and suppressed raw b
         if token.comment:
             index = token.end + 1
             continue
-        if token.closing and token.end != token.start + len(token.name) + 2:
-            part = f"</{token.name}>"
+        if token.closing:
+            part = _closing_tag(token.name)
         yield True, part
         index = token.end + 1
         if event.after:

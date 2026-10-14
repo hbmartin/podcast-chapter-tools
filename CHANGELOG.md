@@ -136,13 +136,21 @@ change as described below.
   Lookahead avoids HTMLParser buffers and skips decided prefix text.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Quotes directly after tag names remain literal rather than starting attributes.
+  NUL-containing tag names remain literal consistently across supported Python
+  versions; their rejected prefix is retained without hiding later tags or chapters.
   Attribute scanning probes the installed parser's repeated-equals and whitespace
-  grammar once, supporting both early and current Python 3.13 releases. Numeric
+  grammar once through public callbacks and `get_starttag_text()`, supporting
+  both early and current Python 3.13 releases without private parser APIs. Numeric
   states and bulk range scans handle long names and values without repeated suffix
   scans. Incomplete quoted assignments use the runtime's boolean/bare fallback
   where available, rather than consuming unrelated subsequent markup.
-  Complete closing tags dispatch canonical names so older interpreters cannot
-  leak their discarded attributes into chapter text. Early Python 3.13.0 and
+  Attribute names remain attached to assignments across LF, CR, and CRLF before
+  `=`, protecting quoted chapter-like text. Recovery options retain their truthiness.
+  Failed quote searches are cached without storing successful closing offsets.
+  Every complete closing tag dispatches its canonical name, so older interpreters
+  and length-changing Unicode lowercasing cannot leak discarded attributes into
+  chapter text. Original opening markup and lexical boundaries are preserved.
+  Early Python 3.13.0 and
   3.13.6 receive enforced compatibility test jobs.
   Attribute quotes protect only values beginning after `=`; quotes in attribute
   names or bare values no longer hide terminators from lookahead. Provisional
