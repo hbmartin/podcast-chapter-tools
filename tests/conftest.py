@@ -7,6 +7,7 @@ import pytest
 
 @pytest.fixture
 def html_start_boundary():
+    # Keep this oracle independent of production probes and ignore later tags.
     class Probe(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -23,6 +24,17 @@ def html_start_boundary():
         return parser.boundary
 
     return boundary
+
+
+@pytest.fixture
+def competing_package(tmp_path):
+    package = tmp_path / "podcast_chapter_tools"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "errors.py").write_text(
+        'raise RuntimeError("Imported the competing installed copy")', encoding="utf-8"
+    )
+    return tmp_path
 
 
 FEED_XML = """<?xml version="1.0" encoding="UTF-8"?>

@@ -88,6 +88,7 @@ _LITERAL = 0
 _DECODE = 1
 _BOUNDARY = 2
 _HTML_SPACE = "\t\n\f\r "
+_HTML_PADDING = re.compile(f"[{re.escape(_HTML_SPACE)}]+")
 _LINE_SPACE = "\t\f "
 _ATTRIBUTE_END = _HTML_SPACE + "><='\""
 _INVALID_VALUE_START = "<=>`"
@@ -142,6 +143,7 @@ _BARE_ATTRIBUTE = re.compile(
 _ASSIGNMENT = re.compile(r"=+")
 _ATTRIBUTE_PREFIX = _HTML_SPACE + "/'\""
 _NAME, _AFTER_NAME, _VALUE, _BARE, _QUOTED = range(5)
+_NAME_STATES = frozenset({_NAME, _AFTER_NAME})
 
 
 def _line_padding_end(text: str, cursor: int) -> int:
@@ -149,6 +151,12 @@ def _line_padding_end(text: str, cursor: int) -> int:
     while cursor < len(text) and text[cursor] in _LINE_SPACE:
         cursor += 1
     return cursor
+
+
+def _html_padding_end(text: str, cursor: int) -> int:
+    """Skip a contiguous ASCII HTML whitespace range, including line breaks."""
+    match = _HTML_PADDING.match(text, cursor)
+    return match.end() if match is not None else cursor
 
 
 def _plain_name(name: str) -> bool:
@@ -195,13 +203,16 @@ def _has_attribute_assignment(text: str, cursor: int) -> bool:
         if not _attribute_name(name):
             return False
         cursor = _line_padding_end(text, cursor)
-        if text[cursor : cursor + 1] == "=":
-            cursor = _line_padding_end(text, cursor + 1)
+        assignment = _html_padding_end(text, cursor)
+        if text[assignment : assignment + 1] == "=":
+            cursor = _line_padding_end(text, assignment + 1)
             if not _plain_name(name):
-                while cursor < len(text) and text[cursor] in _HTML_SPACE:
-                    cursor += 1
+                cursor = _html_padding_end(text, cursor)
                 return text[cursor : cursor + 1] in {"'", '"'}
             return cursor < len(text) and text[cursor] not in _INVALID_VALUE_START
+        if assignment != cursor:
+            # A newline may connect this name to '=', never to another token.
+            return False
     return False
 
 
@@ -257,7 +268,7 @@ def _tag_end(  # noqa: C901, PLR0912, PLR0915 - Attribute fallback and recovery 
                 fallback_state = _NAME
             cursor += 1
             continue
-        if state <= _AFTER_NAME:
+        if state in _NAME_STATES:
             if state == _NAME:
                 match = names.match(text, cursor)
                 if match is None:
@@ -327,7 +338,7 @@ def _tag_boundary(
         return match, match.end(), False
     if delimiter in {"'", '"'}:
         return match, match.end(), True
-    if delimiter == "\x00":
+    if delimiter == "\x00" and text[start + 1] != "/":
         return match, match.end() + 1, True
     end, nested = _tag_end(text, match.end(), recover_chapters=recover_chapters)
     return match, end, nested
@@ -541,7 +552,8 @@ class _TagCache:
     def __init__(self, text: str, *, recover_chapters: bool) -> None:
         """Keep a forward-only lookahead frontier and reusable tag boundaries."""
         self.text = text
-        self.recover = recover_chapters
+        # Cache flags must be booleans even for historical truthy/falsy inputs.
+        self.recover = bool(recover_chapters)  # pyrefly: ignore[unnecessary-type-conversion]
         self.tokens = _TokenStore(len(text))
         self.openings: dict[str, array] = {}
         self.cursor = 0
@@ -1227,7 +1239,7 @@ class _Lines(HTMLParser):
         if tag in _BLOCKS:
             self.boundary()
         elif self._collect_spans:
-            raw = f"</{tag}>"
+            raw = _closing_tag(tag)
             self._raw.append(raw)
             self._length += len(raw)
             if tag == "a" and self._anchors:
@@ -1272,7 +1284,7 @@ class _Inline(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         """Preserve a closing tag only when it matches the open stack."""
         if self.stack and self.stack[-1] == tag:
-            self.parts.append(f"</{tag}>")
+            self.parts.append(_closing_tag(tag))
             self.stack.pop()
 
     def handle_data(self, data: str) -> None:
@@ -1290,7 +1302,7 @@ def inline_fragment(text: str) -> str:
             parser.close()
         else:
             parser.handle_data(part)
-    parser.parts.extend(f"</{tag}>" for tag in reversed(parser.stack))
+    parser.parts.extend(_closing_tag(tag) for tag in reversed(parser.stack))
     return "".join(parser.parts)
 
 

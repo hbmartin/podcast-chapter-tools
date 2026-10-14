@@ -35,6 +35,7 @@ id3 = ["mutagen"]
 
 [dependency-groups]
 dev = [
+    "griffe",
     "mutagen",
     "pyrefly",
     "pyroma621==6.1.0",

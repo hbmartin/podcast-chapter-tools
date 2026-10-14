@@ -139,6 +139,9 @@ modifier chains such as `on:click|once` also provide attribute evidence. Complet
 ordinary tags retain arbitrary attribute names; this grammar only establishes
 recovery evidence. On timestamp-prefixed continuation lines, framework-form
 assignments require quoted values, including values beginning on the next line.
+Timestamp-prefixed attribute evidence also permits ASCII HTML whitespace, including
+line breaks, directly between a valid name and `=`. It does not follow additional
+attribute tokens onto later lines; boolean-only continuations still recover.
 Plain attributes retain bare values, and complete ordinary tags retain bare
 framework attributes. This lets prose such as `Why .NET = productivity`,
 `*5 = great`, and `a|b = c` recover as chapters. Names containing `/` or `?`, or a
@@ -186,9 +189,14 @@ the range actually searched. Nested `<` and quotes cannot become tag-name
 characters, and tag names require ASCII HTML whitespace, `/`, or `>` after them;
 malformed comparison fragments remain literal. A quote directly after a tag name
 makes its prefix literal without swallowing subsequent tags or chapter lines.
-NUL-containing tag names are also literal on every supported Python version:
+NUL-containing opening tag names are literal on every supported Python version:
 the rejected name prefix, including NUL, is retained as text, and scanning resumes
 without letting that opening hide subsequent markup or chapters.
+This intentionally changes rendering on Python 3.13.6 and later, which previously
+accepted and hid these malformed openings. Ordinary complete closing tags instead
+discard their scanned suffixes, including NUL and attributes, and close the
+recognized name. Incomplete fragments and ASCII script/style matching retain
+their existing recovery rules.
 Attribute boundaries follow the installed Python HTML parser's tolerant grammar,
 detected once using bounded probes through public parser callbacks and
 `get_starttag_text()` for repeated equals signs and whitespace.
@@ -198,11 +206,11 @@ Incomplete assignments can instead form boolean attributes or bare values where
 the runtime grammar permits; genuinely unfinished quoted values remain incomplete.
 Valid quoted and multiline values retain their protection, including an attribute
 name separated from `=` by LF, CR, or CRLF. Failed quote searches are remembered
-without retaining successful closing offsets. Every complete closing tag is
+without retaining successful closing offsets. Recognized complete closing tags are
 dispatched in canonical `</name>` form, preventing closing attributes from leaking
 visible text on older interpreters or when Unicode lowercasing expands a name.
-Original lexical boundaries and opening markup remain intact. These rules do not
-change literal recovery for quote-adjacent tag names or malformed comparison fragments.
+Canonical closing events retain the scanner's source boundaries. Literal recovery
+for quote-adjacent names and comparison fragments remains supported.
 Scanner performance is measured separately for long names, bare and quoted
 attribute values, dense lookahead, and short-tag stripping; timings describe those
 workloads and interpreters rather than every possible description.
@@ -497,6 +505,36 @@ Without that exclusion, `--all-groups` requires Python 3.14 or newer.
 The `ai/` directory contains experimental scripts for generating chapters
 from transcripts with LLMs; its dependencies live in `ai/requirements.txt`
 and are not part of the published package.
+
+### API comparisons
+
+[Griffe](https://mkdocstrings.github.io/griffe/guide/users/checking/) is included
+in the development dependencies for manual public Python API comparisons.
+Run checks from the repository root, using any available Git tags or other refs:
+
+```bash
+uv sync --locked --python 3.13
+git fetch --tags
+
+# Compare two tags: older = against, newer = base-ref
+uv run --locked griffe check podcast_chapter_tools \
+  --against v0.1.0 --base-ref v0.2.0
+
+# Compare the working tree against a tag
+uv run --locked griffe check podcast_chapter_tools \
+  --against v0.2.0
+```
+
+`--against` selects the older API and `--base-ref` selects the newer one.
+Omitting `--base-ref` checks the current working tree. Fetch tags if the refs
+you want to compare are not available locally. Add `--verbose` to a check
+command for expanded explanations.
+
+Exit status zero means no API breakages were detected; findings or checker errors
+produce a nonzero status. The exported `__version__` attribute can appear as a
+changed value when comparing versions; review that expected finding alongside
+the other results. Griffe checks Python API structure, so behavioral compatibility
+still needs tests. These checks run manually and are not part of CI.
 
 ## See also
 
