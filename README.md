@@ -498,6 +498,36 @@ The `ai/` directory contains experimental scripts for generating chapters
 from transcripts with LLMs; its dependencies live in `ai/requirements.txt`
 and are not part of the published package.
 
+### API comparisons
+
+[Griffe](https://mkdocstrings.github.io/griffe/guide/users/checking/) is included
+in the development dependencies for manual public Python API comparisons.
+Run checks from the repository root, using any available Git tags or other refs:
+
+```bash
+uv sync --locked --python 3.13
+git fetch --tags
+
+# Compare two tags: older = against, newer = base-ref
+uv run --locked griffe check podcast_chapter_tools \
+  --against v0.1.0 --base-ref v0.2.0
+
+# Compare the working tree against a tag
+uv run --locked griffe check podcast_chapter_tools \
+  --against v0.2.0
+```
+
+`--against` selects the older API and `--base-ref` selects the newer one.
+Omitting `--base-ref` checks the current working tree. Fetch tags if the refs
+you want to compare are not available locally. Add `--verbose` to a check
+command for expanded explanations.
+
+Exit status zero means no API breakages were detected; findings or checker errors
+produce a nonzero status. The exported `__version__` attribute can appear as a
+changed value when comparing versions; review that expected finding alongside
+the other results. Griffe checks Python API structure, so behavioral compatibility
+still needs tests. These checks run manually and are not part of CI.
+
 ## See also
 
 - https://github.com/hbmartin/podcast-transcript-convert
