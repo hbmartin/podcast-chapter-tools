@@ -138,10 +138,16 @@ def test_import_probes_use_only_public_parser_methods():
 import html.parser
 Original = html.parser.HTMLParser
 class OriginalProbe(Original):
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+        self.whole = False
+        self.feed(text)
+        self.close()
     def handle_starttag(self, tag, attrs):
-        self.whole = self.get_starttag_text() == '<b x=="a>b">'
-probe = OriginalProbe()
-probe.feed('<b x=="a>b">')
+        self.whole = self.get_starttag_text() == self.text
+equals = OriginalProbe('<b x=="a>b">').whole
+space = OriginalProbe('<b x=\\v"a>b">').whole
 class PublicParser:
     __slots__ = ('_parser',)
     def __init__(self, *args, **kwargs):
@@ -161,7 +167,8 @@ class PublicParser:
 html.parser.HTMLParser = PublicParser
 from podcast_chapter_tools import markup
 assert not hasattr(PublicParser, 'check_for_whole_start_tag')
-assert markup._REPEATED_EQUALS == probe.whole
+assert markup._REPEATED_EQUALS == equals
+assert markup._UNICODE_ATTRIBUTE_SPACE == space
 """
     subprocess.run(  # noqa: S603 - Fixed public-interface probe regression.
         [sys.executable, "-c", code],

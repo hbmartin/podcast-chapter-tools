@@ -257,18 +257,8 @@ def test_integer_fingerprints_keep_canonical_representation(value):
 
 
 @pytest.mark.parametrize("negative", [False, True])
-def test_large_integer_fingerprint_allocation_is_linear(
-    negative, tmp_path, monkeypatch
-):
+def test_large_integer_fingerprint_allocation_is_linear(negative, competing_package):
     root = Path(__file__).resolve().parents[1]
-    package = tmp_path / "podcast_chapter_tools"
-    package.mkdir()
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "errors.py").write_text(
-        'raise RuntimeError("Imported the competing installed copy")', encoding="utf-8"
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     code = f"""
 import tracemalloc
 import sys
@@ -276,6 +266,7 @@ from pathlib import Path
 from podcast_chapter_tools import errors
 assert Path(errors.__file__).resolve() == Path(sys.argv[1]) / 'podcast_chapter_tools' / 'errors.py'
 paths = [Path(value).resolve() for value in sys.path]
+assert sys.flags.safe_path
 assert paths.index(Path(sys.argv[1])) < paths.index(Path(sys.argv[2]))
 value = (1 << (20 * 1024 * 1024 * 8)) - 1
 if {negative!r}:
@@ -286,9 +277,12 @@ _, peak = tracemalloc.get_traced_memory()
 assert peak <= 25 * 1024 * 1024, peak
 """
     subprocess.run(  # noqa: S603 - Fixed isolated allocation regression.
-        [sys.executable, "-c", code, str(root), str(tmp_path)],
+        [sys.executable, "-P", "-c", code, str(root), str(competing_package)],
         cwd=root,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(root), str(tmp_path)))},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(root), str(competing_package))),
+        },
         check=True,
         capture_output=True,
         text=True,

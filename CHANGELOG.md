@@ -136,8 +136,12 @@ change as described below.
   Lookahead avoids HTMLParser buffers and skips decided prefix text.
   Nested `<` and quotes cannot become tag-name characters or artificial markup.
   Quotes directly after tag names remain literal rather than starting attributes.
-  NUL-containing tag names remain literal consistently across supported Python
-  versions; their rejected prefix is retained without hiding later tags or chapters.
+  NUL-containing opening tag names remain literal consistently across supported
+  Python versions; their rejected prefix is retained without hiding later tags or
+  chapters. This intentionally changes visible output on Python 3.13.6 and later,
+  which previously hid these malformed openings. Ordinary complete NUL-suffixed
+  closings discard their suffixes and close the recognized name, preventing literal
+  closing text, attribute leakage, and lingering link context.
   Attribute scanning probes the installed parser's repeated-equals and whitespace
   grammar once through public callbacks and `get_starttag_text()`, supporting
   both early and current Python 3.13 releases without private parser APIs. Numeric
@@ -145,11 +149,15 @@ change as described below.
   scans. Incomplete quoted assignments use the runtime's boolean/bare fallback
   where available, rather than consuming unrelated subsequent markup.
   Attribute names remain attached to assignments across LF, CR, and CRLF before
-  `=`, protecting quoted chapter-like text. Recovery options retain their truthiness.
+  `=`, protecting quoted chapter-like text. Timestamp-prefixed attribute evidence
+  permits the same direct ASCII-whitespace name-to-assignment connection, while
+  preserving same-line value rules and boolean-only chapter recovery. It does not
+  follow additional attribute tokens across lines. Recovery options retain their
+  truthiness and normalize flags before compact cache storage.
   Failed quote searches are cached without storing successful closing offsets.
-  Every complete closing tag dispatches its canonical name, so older interpreters
+  Recognized complete closing tags share canonical rendering, so older interpreters
   and length-changing Unicode lowercasing cannot leak discarded attributes into
-  chapter text. Original opening markup and lexical boundaries are preserved.
+  chapter text. Scanner source boundaries and raw-block matching remain intact.
   Early Python 3.13.0 and
   3.13.6 receive enforced compatibility test jobs.
   Attribute quotes protect only values beginning after `=`; quotes in attribute
