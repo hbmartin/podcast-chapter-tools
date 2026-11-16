@@ -27,7 +27,7 @@ classifiers = [
 
 dependencies = [
     "httpx2>=2.16.0",
-    "loguru>=0.7.3",
+    "loguru>=0.8.0",
 ]
 
 [project.optional-dependencies]
